@@ -1,15 +1,36 @@
 // Profilo altimetrico su canvas. Si ridisegna solo se cambia qualcosa.
 
-const C = {
-  doneFill: '#4b5563',
-  todoFill: '#9ec1ea',
-  doneLine: '#0b0b0b',
-  todoLine: '#0b3a82',
-  gps: '#0057d9',
-  estimate: '#c24a00',
-  sure: '#5b21b6',
-  trim: '#d6007f',
+const PALETTES = {
+  light: {
+    doneFill: '#4b5563',
+    todoFill: '#9ec1ea',
+    doneLine: '#0b0b0b',
+    todoLine: '#0b3a82',
+    gps: '#0057d9',
+    estimate: '#c24a00',
+    band: 'rgba(194, 74, 0, 0.4)',
+    sure: '#5b21b6',
+    trim: '#d6007f',
+    veil: 'rgba(255, 255, 255, 0.78)',
+    ink: '#0b0b0b',
+    halo: '#ffffff',
+  },
+  dark: {
+    doneFill: '#6b7280',
+    todoFill: '#2f5f96',
+    doneLine: '#e5e7eb',
+    todoLine: '#9ec1ea',
+    gps: '#4d94ff',
+    estimate: '#ff9d5c',
+    band: 'rgba(255, 157, 92, 0.35)',
+    sure: '#a78bfa',
+    trim: '#ff5cb8',
+    veil: 'rgba(21, 24, 28, 0.78)',
+    ink: '#f1f3f5',
+    halo: '#15181c',
+  },
 };
+const currentTheme = () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
 
 /**
  * @typedef {object} ProfileModel
@@ -85,7 +106,7 @@ export function createProfile(canvas, { onScrub } = {}) {
     const dpr = window.devicePixelRatio || 1;
     const { route, pos, band, sureDist, trim } = model;
     const key = [
-      route ? routeId(route) : 0, w, h, dpr, r10(pos?.dist), pos?.kind, r10(band?.min), r10(band?.max),
+      currentTheme(), route ? routeId(route) : 0, w, h, dpr, r10(pos?.dist), pos?.kind, r10(band?.min), r10(band?.max),
       r10(sureDist), r10(trim?.start), r10(trim?.end), r10(scrubDist),
     ].join('|');
     if (key === drawnKey) return;
@@ -105,6 +126,7 @@ export function createProfile(canvas, { onScrub } = {}) {
 
   function paint(w, h) {
     const { route, pos, band, sureDist, trim } = model;
+    const C = PALETTES[currentTheme()];
     const { ys, min, max } = curve.data;
     const padT = 22;
     const padB = 6;
@@ -154,7 +176,7 @@ export function createProfile(canvas, { onScrub } = {}) {
       ctx.fillStyle = color;
       ctx.fill();
       ctx.lineWidth = 3;
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = C.halo;
       ctx.stroke();
     };
 
@@ -165,12 +187,12 @@ export function createProfile(canvas, { onScrub } = {}) {
     if (band) {
       const x0 = xOf(band.min);
       const x1 = Math.max(xOf(band.max), x0 + 3);
-      ctx.fillStyle = 'rgba(194, 74, 0, 0.4)';
+      ctx.fillStyle = C.band;
       ctx.fillRect(x0, 0, x1 - x0, h);
       vline(x0, C.estimate, 2, [5, 3]);
       vline(x1, C.estimate, 2, [5, 3]);
     }
-    for (const r of route.trackRanges.slice(1)) vline(xOf(r.startDist), '#0b0b0b', 2, [4, 3]);
+    for (const r of route.trackRanges.slice(1)) vline(xOf(r.startDist), C.ink, 2, [4, 3]);
 
     if (sureDist != null) {
       const x = xOf(sureDist);
@@ -186,7 +208,7 @@ export function createProfile(canvas, { onScrub } = {}) {
     if (trim) {
       const x0 = xOf(trim.start);
       const x1 = xOf(trim.end);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+      ctx.fillStyle = C.veil;
       ctx.fillRect(0, 0, x0, h);
       ctx.fillRect(x1, 0, w - x1, h);
       vline(x0, C.trim, 3);
@@ -194,16 +216,16 @@ export function createProfile(canvas, { onScrub } = {}) {
     }
     if (scrubDist != null) {
       const x = xOf(scrubDist);
-      vline(x, '#0b0b0b', 2);
-      dot(x, '#0b0b0b');
+      vline(x, C.ink, 2);
+      dot(x, C.ink);
     }
 
     if (route.hasElevation) {
       ctx.font = '700 16px -apple-system, sans-serif';
       ctx.lineJoin = 'round';
       ctx.lineWidth = 4;
-      ctx.strokeStyle = '#fff';
-      ctx.fillStyle = '#0b0b0b';
+      ctx.strokeStyle = C.halo;
+      ctx.fillStyle = C.ink;
       const label = (text, y) => {
         ctx.strokeText(text, 4, y);
         ctx.fillText(text, 4, y);

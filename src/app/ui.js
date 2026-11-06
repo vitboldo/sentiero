@@ -188,12 +188,12 @@ function hideScrub() {
 }
 
 // ---------- Gestione fogli ----------
-const SHEET_TITLES = { tracks: 'Tracce', edit: 'Modifica traccia', offline: 'Mappe offline' };
+const SHEET_TITLES = { tracks: 'Tracce', edit: 'Modifica traccia', offline: 'Mappe offline', theme: 'Aspetto' };
 
 function openSheet(kind, trackId = null) {
   closeSheet();
   const body = h('div', { class: 'sheet-body' });
-  const el = h('section', { class: `sheet${kind === 'edit' ? ' half' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': SHEET_TITLES[kind] },
+  const el = h('section', { class: `sheet${kind === 'edit' || kind === 'theme' ? ' half' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': SHEET_TITLES[kind] },
     h('header', { class: 'sheet-head' }, h('h2', {}, SHEET_TITLES[kind]), button('Chiudi', closeSheet)),
     body);
   $('sheet-root').append(el);
@@ -221,7 +221,7 @@ function renderSheet() {
   sheet.dispose?.();
   sheet.dispose = null;
   sheet.after = null;
-  const content = { tracks: tracksContent, edit: editContent, offline: offlineContent }[sheet.kind]();
+  const content = { tracks: tracksContent, edit: editContent, offline: offlineContent, theme: themeContent }[sheet.kind]();
   sheet.body.replaceChildren(...content.flat().filter(Boolean));
   sheet.body.scrollTop = scroll;
   sheet.after?.();
@@ -238,6 +238,28 @@ function setTracks(tracks, route) {
 function showImportReport(report) {
   data.report = report;
   if (sheet?.kind === 'tracks') renderSheet();
+}
+
+// ---------- Foglio Aspetto ----------
+const THEME_CHOICES = [['light', 'Chiaro'], ['dark', 'Scuro'], ['auto', 'Automatico']];
+
+function themeContent() {
+  const pref = window.sentieroTheme.pref();
+  return [
+    h('div', { class: 'seg wide', role: 'group', 'aria-label': 'Tema' },
+      THEME_CHOICES.map(([value, label]) => {
+        const choice = h('button', {
+          type: 'button',
+          onclick: () => {
+            window.sentieroTheme.set(value);
+            renderSheet();
+          },
+        }, label);
+        choice.setAttribute('aria-pressed', String(value === pref));
+        return choice;
+      })),
+    h('p', { class: 'hint' }, 'Automatico segue l\'impostazione dell\'iPhone. Sotto il sole il tema chiaro è il più leggibile.'),
+  ];
 }
 
 // ---------- Foglio Tracce ----------
@@ -564,6 +586,7 @@ export function createUi(actionHandlers) {
   actions = actionHandlers;
   $('btn-tracks').addEventListener('click', () => openSheet('tracks'));
   $('btn-offline').addEventListener('click', () => openSheet('offline'));
+  $('btn-theme').addEventListener('click', () => openSheet('theme'));
   $('btn-locate').addEventListener('click', () => actions.locate());
   $('btn-north').addEventListener('click', () => actions.northUp());
   $('status').addEventListener('click', () => actions.statusTap());

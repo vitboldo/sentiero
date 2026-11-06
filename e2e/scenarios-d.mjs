@@ -865,4 +865,74 @@ export async function scenariosD() {
     ck('freccia = angolo reale a schermo verso la traccia, a ogni fotogramma (±4°)', samples.every((q) => Math.abs(angDiff(q.arrow, q.real)) < 4), samples.filter((q) => Math.abs(angDiff(q.arrow, q.real)) >= 4).slice(0, 3));
     ckAng('rotazione finale 160', samples[samples.length - 1].bearing, 160, 1.5);
   });
+
+  // ------------------------------------------------------------------ 56
+  await scenario(56, 'Tema: predefinito chiaro, scelta persistente, automatico, colori e profilo', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    const look = () => p.evaluate(() => {
+      const css = (el, prop) => getComputedStyle(el)[prop];
+      const c = document.getElementById('profile');
+      return {
+        theme: document.documentElement.dataset.theme,
+        pref: window.sentieroTheme.pref(),
+        bg: css(document.getElementById('panel'), 'backgroundColor'),
+        fg: css(document.getElementById('st-dist'), 'color'),
+        filter: css(document.querySelector('.leaflet-tile-pane'), 'filter'),
+        zoomBg: css(document.querySelector('.leaflet-control-zoom a'), 'backgroundColor'),
+        toastBg: css(document.getElementById('toast'), 'backgroundColor'),
+        arrow: css(document.querySelector('.mk-arrow svg'), 'fill'),
+        bar: document.querySelector('meta[name="theme-color"]').content,
+        profile: c.toDataURL(),
+      };
+    });
+    const choose = async (label) => {
+      await p.click('#btn-theme');
+      await p.click(`.seg.wide button:has-text("${label}")`);
+      const pressed = await p.$$eval('.seg.wide button[aria-pressed="true"]', (b) => b.map((x) => x.textContent));
+      ck(`${label}: è l'unica opzione evidenziata`, pressed.length === 1 && pressed[0] === label, pressed);
+      await closeSheet(p);
+    };
+
+    const light = await look();
+    ck('senza scelta il tema è chiaro', light.theme === 'light' && light.pref === 'light', light.theme);
+    ck('chiaro: nessun filtro sulla mappa', light.filter === 'none', light.filter);
+
+    await choose('Scuro');
+    const dark = await look();
+    ck('scuro: tema applicato', dark.theme === 'dark', dark.theme);
+    ck('scuro: pannello scuro e testo chiaro', dark.bg === 'rgb(21, 24, 28)' && dark.fg === 'rgb(241, 243, 245)', [dark.bg, dark.fg]);
+    ck('scuro: mappa filtrata', dark.filter.includes('invert'), dark.filter);
+    ck('scuro: controlli di zoom scuri', dark.zoomBg === 'rgb(21, 24, 28)', dark.zoomBg);
+    ck('scuro: avvisi non chiari sotto testo bianco', dark.toastBg === 'rgb(42, 47, 54)', dark.toastBg);
+    ck('scuro: frecce di direzione invariate', dark.arrow === light.arrow, [dark.arrow, light.arrow]);
+    ck('scuro: barra del browser scura', dark.bar === '#15181c', dark.bar);
+    ck('scuro: il profilo è stato ridisegnato', dark.profile !== light.profile);
+    await p.screenshot({ path: `${SHOTS}\\56-scuro.png`, scale: 'css' });
+
+    await p.reload();
+    await p.waitForFunction(() => window.__sentiero && window.__sentiero.tracks().length > 0);
+    const again = await p.evaluate(() => [document.documentElement.dataset.theme, window.sentieroTheme.pref()]);
+    ck('dopo il riavvio resta scuro', again[0] === 'dark' && again[1] === 'dark', again);
+
+    await p.emulateMedia({ colorScheme: 'dark' });
+    await choose('Automatico');
+    ck('automatico con iPhone scuro: scuro', (await look()).theme === 'dark');
+    await p.emulateMedia({ colorScheme: 'light' });
+    // L'evento del sistema arriva al primo aggiornamento di rendering, non subito: si attende, con un limite.
+    await p.waitForFunction(() => document.documentElement.dataset.theme === 'light', null, { timeout: 2000 }).catch(() => {});
+    const autoLight = await look();
+    ck('automatico segue il passaggio a chiaro', autoLight.theme === 'light', autoLight.theme);
+    await choose('Scuro');
+    const darkAgain = await look();
+    ck('scuro dopo il riavvio: profilo diverso dal chiaro', darkAgain.profile !== autoLight.profile);
+
+    await p.emulateMedia({ colorScheme: 'dark' });
+    await choose('Chiaro');
+    await W(p, 100);
+    const back = await look();
+    ck('chiaro ignora l\'iPhone scuro', back.theme === 'light' && back.filter === 'none', back.theme);
+    // Non con `light`: dopo il ricaricamento il pannello ha un altro stato e il profilo cambia a prescindere dal tema.
+    ck('tornando a chiaro il profilo è identico a quello chiaro', back.profile === autoLight.profile);
+  });
 }

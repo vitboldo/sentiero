@@ -14,6 +14,7 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="styles.css">
+  <script src="src/app/theme.js"></script>
 </head>
 <body>
   <div id="map" aria-label="Mappa"></div>
@@ -30,8 +31,12 @@
 
   <button id="btn-north" type="button" hidden aria-label="Riporta il nord in alto">
     <svg viewBox="0 0 48 48" aria-hidden="true">
-      <g id="north-needle"><path d="M24 6 31 24H17z" fill="#d62828"/><path d="M24 42 17 24h14z" fill="#59616e"/></g>
+      <g id="north-needle"><path d="M24 6 31 24H17z" fill="#d62828"/><path d="M24 42 17 24h14z" fill="currentColor"/></g>
     </svg>
+  </button>
+
+  <button id="btn-theme" type="button" aria-label="Aspetto: tema chiaro o scuro">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>
   </button>
 
   <section id="panel" aria-label="Avanzamento">

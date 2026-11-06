@@ -589,6 +589,7 @@ const profile = createProfile(document.getElementById('profile'), {
 });
 
 async function start() {
+  window.sentieroTheme.onChange(render); // il profilo su canvas non segue il CSS
   store.setStoreErrorHandler((message) => ui.toast(message, { error: true }));
   const saved = await store.loadAll();
   state.tracks = saved.tracks;

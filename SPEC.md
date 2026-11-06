@@ -132,6 +132,7 @@ requestPersist()
 - Screen Wake Lock: attivo per default durante il tracciamento, riacquisito su `visibilitychange`. Se non disponibile: indicazione di impostare il Blocco automatico su Mai. Al ritorno in primo piano, riavvio di `watchPosition`.
 - Avviso alla prima apertura, una sola volta: a schermo bloccato iOS sospende il GPS, l'app stimerà la posizione al ritorno. Se non è in modalità standalone: guida a `Condividi > Aggiungi alla schermata Home`.
 - Persistenza (`store.js`, IndexedDB `sentiero`): tracce, ordine, stato tracker, `Tappa/Totale`, ultima vista mappa. All'apertura ripristina tutto. Tutte le chiamate tollerano errori di storage e li mostrano.
+- Tema (`theme.js`, classico in `<head>` per non lampeggiare all'avvio; scelta in `localStorage`): Chiaro (predefinito), Scuro, Automatico, dal pulsante Aspetto. Nel tema scuro la mappa è scurita con un filtro CSS sulle tile (`--tile-filter`); i marcatori restano uguali nei due temi.
 - Stile: tema chiaro ad alto contrasto, leggibile al sole, testo minimo 16 px, numeri principali almeno 28 px, safe-area iOS, layout solo verticale ma non rotto in orizzontale. Nessun grigio chiaro su bianco.
 - Rendering: l'aggiornamento è guidato da un tick di 1 s su `tracker.snapshot(Date.now())`. Il profilo si ridisegna solo se cambia qualcosa.
 - Per i test E2E, `window.__sentiero` espone `{tracks(), snapshot(), injectFix(fix), view(), setView(view), viewMode(), bearing()}`.

@@ -18,6 +18,10 @@ Web app (PWA) per seguire tracce GPX in montagna, pensata per iPhone e per l'uso
 - [ ] Porta una power bank.
 - [ ] Tieni una copia del percorso in un'altra app o su carta.
 
+## Aspetto
+
+Il pulsante rotondo in basso a sinistra sulla mappa sceglie il tema: Chiaro (predefinito, il più leggibile al sole), Scuro o Automatico (segue l'iPhone). Nel tema scuro si scurisce anche la mappa.
+
 ## Navigazione
 
 Il pulsante di posizione ha tre stati: al primo tocco la mappa ti segue con il nord in alto, al secondo gira con l'iPhone (**Navigazione**), al terzo torna libera. Con due dita puoi ruotarla e ingrandirla; la bussolina in alto a destra riporta il nord in alto. Al primo tocco iOS chiede il permesso per la bussola: va consentito per vedere il cono di direzione e usare la Navigazione.

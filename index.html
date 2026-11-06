@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Sentiero</title>
+  <meta name="theme-color" content="#ffffff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Sentiero">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="map" aria-label="Mappa"></div>
+
+  <div id="top">
+    <button id="status" class="pill" type="button" data-level="wait" aria-live="polite">
+      <span id="status-text">In attesa del GPS</span>
+    </button>
+    <div id="banner" hidden role="alert">
+      <svg id="banner-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 20 21l-8-5-8 5z" fill="currentColor"/></svg>
+      <span id="banner-text"></span>
+    </div>
+  </div>
+
+  <section id="panel" aria-label="Avanzamento">
+    <div id="empty" hidden><p id="empty-text"></p></div>
+    <div id="live">
+      <div class="scope-row">
+        <p id="caption"></p>
+        <div id="scope" class="seg" hidden role="group" aria-label="Ambito">
+          <button type="button" data-mode="tappa">Tappa</button>
+          <button type="button" data-mode="totale">Totale</button>
+        </div>
+      </div>
+      <div id="stats" class="stats">
+        <div class="stat"><span class="num" id="st-dist">–</span><span class="lbl">km mancanti</span></div>
+        <div class="stat stat-up"><span class="num" id="st-up">–</span><span class="lbl">D+ m</span></div>
+        <div class="stat stat-down"><span class="num" id="st-down">–</span><span class="lbl">D− m</span></div>
+        <div class="stat"><span class="num" id="st-time">–</span><span class="lbl">tempo stimato</span></div>
+      </div>
+      <div id="profile-wrap">
+        <canvas id="profile" aria-label="Profilo altimetrico"></canvas>
+        <div id="scrub" hidden></div>
+        <div id="noele" hidden>Quote non disponibili</div>
+      </div>
+      <p id="profile-label"></p>
+    </div>
+    <nav id="actions">
+      <button id="btn-locate" class="btn" type="button" aria-pressed="false">Centra su di me</button>
+      <button id="btn-tracks" class="btn primary" type="button">Tracce</button>
+      <button id="btn-offline" class="btn" type="button">Mappe offline</button>
+    </nav>
+  </section>
+
+  <div id="sheet-root"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="src/app/main.js"></script>
+</body>
+</html>

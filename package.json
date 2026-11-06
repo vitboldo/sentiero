@@ -1,0 +1,13 @@
+{
+  "name": "sentiero",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "e2e": "node e2e/run.mjs"
+  },
+  "devDependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "playwright": "1.65.0"
+  }
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<g:gpx xmlns:g="http://www.topografix.com/GPX/1/1" version="1.1" creator="x">
+  <g:wpt lat="46.5" lon="10.5"><g:name>Cima</g:name></g:wpt>
+  <g:trk>
+    <g:name>Prefissata</g:name>
+    <g:trkseg>
+      <g:trkpt lat="46.5" lon="10.5"><g:ele>2000.5</g:ele></g:trkpt>
+      <g:trkpt lat="46.501" lon="10.5"><g:ele>2010.5</g:ele></g:trkpt>
+    </g:trkseg>
+  </g:trk>
+</g:gpx>

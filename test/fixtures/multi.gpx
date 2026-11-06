@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="x" xmlns="http://www.topografix.com/GPX/1/1">
+  <wpt lat="46.0" lon="10.0"><name>Partenza</name></wpt>
+  <wpt lat="46.1" lon="10.1"><name>Arrivo</name></wpt>
+  <trk>
+    <name>Prima</name>
+    <trkseg>
+      <trkpt lat="46.00" lon="10.00"><ele>100</ele></trkpt>
+      <trkpt lat="46.01" lon="10.00"><ele>110</ele></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="46.02" lon="10.00"></trkpt>
+      <trkpt lat="46.02" lon="10.00"></trkpt>
+      <trkpt lat="46.03" lon="10.00"><ele>130</ele></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <name>Seconda</name>
+    <trkseg>
+      <trkpt lat="46.10" lon="10.10"><ele>500</ele></trkpt>
+      <trkpt lat="abc" lon="10.11"><ele>501</ele></trkpt>
+      <trkpt lat="46.11" lon="10.11"><ele>510</ele></trkpt>
+    </trkseg>
+  </trk>
+  <rte>
+    <name>Rotta</name>
+    <rtept lat="47.0" lon="11.0"><ele>900</ele></rtept>
+    <rtept lat="47.001" lon="11.0"><ele>905</ele></rtept>
+  </rte>
+</gpx>

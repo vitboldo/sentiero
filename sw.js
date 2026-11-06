@@ -1,5 +1,5 @@
 // Percorsi relativi allo scope del SW: funziona in una sottocartella (GitHub Pages).
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `sentiero-shell-${CACHE_VERSION}`;
 const TILE_OFFLINE = 'tiles-offline-v1';   // mai toccata qui: appartiene ai pacchetti dell'utente
 const TILE_RUNTIME = 'tiles-runtime-v1';

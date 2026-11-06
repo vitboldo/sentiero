@@ -8,6 +8,9 @@ import {
   screenBearing,
   rotateOffset,
   createHeadingFilter,
+  dampFactor,
+  dampStep,
+  dampAngleStep,
 } from '../src/core/heading.js';
 
 /** Confronto tra angoli circolari. */
@@ -242,4 +245,60 @@ test('filtro: deg sempre in [0,360)', () => {
   f.push({ heading: 0.1, accuracy: 5, timestamp: 1000 });
   const { deg } = f.read(1000);
   assert.ok(deg >= 0 && deg < 360, `fuori intervallo: ${deg}`);
+});
+
+test('dampFactor: 0 senza tempo, tende a 1, 1 con tau non positivo, mai NaN', () => {
+  assert.equal(dampFactor(0, 100), 0);
+  assert.equal(dampFactor(-5, 100), 0);
+  assert.equal(dampFactor(NaN, 100), 0);
+  assert.equal(dampFactor(10, 0), 1);
+  assert.ok(Math.abs(dampFactor(100, 100) - (1 - Math.exp(-1))) < 1e-12);
+  assert.ok(dampFactor(1e9, 100) > 0.999999);
+  assert.ok(dampFactor(16, 120) > 0 && dampFactor(16, 120) < 1);
+});
+
+test('dampStep: avvicina senza superare il bersaglio e non dipende dal frame rate', () => {
+  let v = 0;
+  for (let i = 0; i < 20; i++) {
+    const n = dampStep(v, 10, 16, 120);
+    assert.ok(n > v && n < 10);
+    v = n;
+  }
+  // due passi da 8 ms = un passo da 16 ms
+  const a = dampStep(dampStep(0, 10, 8, 120), 10, 8, 120);
+  assert.ok(Math.abs(a - dampStep(0, 10, 16, 120)) < 1e-12);
+  // verso il basso e dt=0
+  assert.ok(dampStep(10, -4, 50, 100) < 10 && dampStep(10, -4, 50, 100) > -4);
+  assert.equal(dampStep(3, 9, 0, 100), 3);
+  // dopo molto tempo arriva al bersaglio
+  assert.ok(Math.abs(dampStep(0, 10, 1e6, 100) - 10) < 1e-9);
+});
+
+test('dampAngleStep: passa dalla parte corta (350 -> 10 e 10 -> 350)', () => {
+  let a = 350;
+  const seen = [];
+  for (let i = 0; i < 60; i++) {
+    a = dampAngleStep(a, 10, 16, 120);
+    seen.push(a);
+  }
+  assert.ok(seen.every((d) => d >= 0 && d < 360));
+  assert.ok(seen.every((d) => d >= 350 || d <= 10), `giro dalla parte lunga: ${seen.find((d) => d < 350 && d > 10)}`);
+  assert.ok(Math.abs(angleDiffDeg(a, 10)) < 0.5);
+  let b = 10;
+  for (let i = 0; i < 60; i++) {
+    b = dampAngleStep(b, 350, 16, 120);
+    assert.ok(b >= 350 || b <= 10);
+  }
+});
+
+test('dampAngleStep: monotono verso il bersaglio, risultato normalizzato, uguale al lineare lontano dallo 0', () => {
+  assert.ok(Math.abs(dampAngleStep(100, 200, 120, 120) - dampStep(100, 200, 120, 120)) < 1e-9);
+  assert.equal(dampAngleStep(45, 45, 16, 120), 45);
+  assert.equal(dampAngleStep(10, 300, 0, 120), 10);
+  assert.ok(Math.abs(angleDiffDeg(dampAngleStep(0, 90, 1e6, 100), 90)) < 1e-9);
+  // 180 esatti: senso orario, senza NaN
+  const h = dampAngleStep(0, 180, 120, 120);
+  assert.ok(h > 0 && h < 180);
+  // angoli fuori da [0,360) in ingresso
+  assert.ok(Math.abs(angleDiffDeg(dampAngleStep(-10, 370, 1e6, 100), 10)) < 1e-9);
 });

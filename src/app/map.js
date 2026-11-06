@@ -2,7 +2,7 @@
 import { TILE_URL } from '../core/tiles.js';
 import { effectivePoints, statsAt } from '../core/route.js';
 import { bearingDeg } from '../core/geo.js';
-import { normalizeDeg, angleDiffDeg, rotateOffset } from '../core/heading.js';
+import { normalizeDeg, angleDiffDeg, rotateOffset, dampStep, dampAngleStep } from '../core/heading.js';
 
 const L = window.L;
 
@@ -18,6 +18,17 @@ const MOVEEND_MAX_WAIT_MS = 1000;
 const ROTATE_REFRESH_MS = 150;
 const SNAP_NORTH_DEG = 5;
 const USER_ROTATE_DEG = 8;
+// Motore di animazione (solo visivo): costanti di tempo dello smorzamento esponenziale e soglie.
+const TAU_ROT_MS = 120;
+const TAU_POS_MS = 350;
+const JUMP_M = 150; // oltre questa distanza (o oltre lo schermo) niente animazione
+const DONE_PX = 0.2; // sotto questa distanza a schermo l'obiettivo è raggiunto
+const DONE_DEG = 0.05;
+const MAX_DT_MS = 100;
+const TILE_REFRESH_MS = 250;
+const PAN_REDRAW_FRACTION = 0.15; // spostamento netto (frazione dello schermo) dopo cui si ricentra il canvas
+const WORK_MOVE_FRACTION = 0.1; // durante un'animazione lunga frecce e salvataggio si aggiornano dopo questo spostamento
+const WORK_ROTATE_DEG = 15;
 const LINE = { interactive: false, smoothFactor: 1.5 };
 
 const loadImage = (url) => new Promise((resolve, reject) => {
@@ -149,8 +160,22 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
   const renderer = L.canvas({ padding: 0.3 });
   const map = L.map(el, { maxZoom: MAX_ZOOM, minZoom: 4, renderer, zoomControl: false, attributionControl: true, rotate: true, touchRotate: true, rotateControl: false, bearing: 0 });
   map.attributionControl.setPrefix(false);
+
+  // ---- API PRIVATA del plugin, isolata qui ----
+  // setBearing() ricalcola _pixelOrigin da getCenter(): dopo uno spostamento del pannello il valore cambia di ~1e-9 px
+  // per arrotondamento. I renderer lo confrontano con equals() e a ogni passo riproiettano TUTTE le polilinee
+  // (_onZoomEnd) e ridisegnano il canvas (misurato: ~35 ms a passo con 10.000 punti, Chromium CPU x4; con questo ~3 ms).
+  // Se l'origine è cambiata di meno di 0,01 px rimetto quella di prima. Il listener deve essere registrato PRIMA
+  // di quelli dei renderer (che nascono con la prima polilinea).
+  let lastOrigin = null;
+  map.on('rotate', () => {
+    const o = map._pixelOrigin;
+    if (!o) return;
+    if (lastOrigin && o !== lastOrigin && Math.abs(o.x - lastOrigin.x) < 0.01 && Math.abs(o.y - lastOrigin.y) < 0.01) map._pixelOrigin = lastOrigin;
+    else lastOrigin = o;
+  });
   L.control.zoom({ position: 'topright', zoomInText: '+', zoomOutText: '−' }).addTo(map);
-  new FallbackTileLayer(TILE_URL, {
+  const tileLayer = new FallbackTileLayer(TILE_URL, {
     maxZoom: MAX_ZOOM,
     maxNativeZoom: MAX_ZOOM,
     attribution: ATTRIBUTION,
@@ -201,7 +226,7 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
   let doneDist = null;
   let arrowDoneDist = null;
   let bandKey = '';
-  let lastCenter = null;
+  let accuracyKey = '';
 
   const place = (layer, latlng) => {
     if (!latlng) {
@@ -275,7 +300,10 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     }
   };
 
+  let workView = null; // vista all'ultimo lavoro di fine movimento (frecce, salvataggio)
+  let workAt = 0;
   const onMoveEnd = () => {
+    workView = { c: map.project(map.getCenter()), z: map.getZoom(), b: currentBearing() };
     drawArrows();
     const c = map.getCenter();
     onViewChange({ lat: c.lat, lon: c.lng, zoom: map.getZoom(), bearing: currentBearing() });
@@ -291,8 +319,12 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
       onMoveEnd();
     }, wait);
   };
-  map.on('dragstart', () => onUserMove());
+  map.on('dragstart', () => {
+    clearTargets(); // il dito comanda: niente obiettivo di mappa
+    onUserMove();
+  });
   map.on('moveend', () => {
+    panNet = { x: 0, y: 0 };
     if (programmatic) {
       scheduleMoveEnd();
       return;
@@ -301,7 +333,10 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     moveTimer = 0;
     onMoveEnd();
   });
-  map.on('zoomend', () => el.classList.toggle('zoom-low', map.getZoom() < 13));
+  map.on('zoomend', () => {
+    el.classList.toggle('zoom-low', map.getZoom() < 13);
+    wakeIfBusy(); // fine dell'animazione di zoom: il motore riparte
+  });
 
   // Dopo una rotazione restano angoli senza tile: un moveend (rimandato) li fa caricare.
   const refreshAfterRotate = () => {
@@ -330,11 +365,15 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
       onUserRotate?.();
     }
     refreshAfterRotate();
+    wakeIfBusy();
   };
   el.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 2 || gesturing) return;
     gesturing = true;
     gestureStartBearing = currentBearing();
+    rotTarget = null; // la rotazione è delle dita
+    cancelAnimationFrame(animRaf);
+    animRaf = 0;
   }, { passive: true });
   const onTouchEnd = (e) => {
     if (!gesturing || e.touches.length >= 2) return;
@@ -356,6 +395,178 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     return map.unproject(map.project([lat, lon], zoom).add([d.x, d.y]), zoom);
   };
   const visibleHeight = () => Math.max(1, map.getSize().y - getBottomInset());
+
+  // ---- Motore di animazione (solo visivo) ----
+  // Obiettivi: rotazione (rotTarget), pallino GPS (dot) e "fuoco" della mappa (focus: un punto tenuto a una posizione
+  // dello schermo, l'ancora). Ogni passo li avvicina con smorzamento esponenziale dipendente da dt (heading.js).
+  // Il ciclo rAF gira solo finché c'è qualcosa da muovere. Durante l'animazione la mappa si sposta con _rawPanBy
+  // senza moveend: il lavoro di fine movimento (frecce, salvataggio, tile) è accorpato alla fine.
+  // I dati (stime, ultimo punto sicuro, valori per pannello e tracker) non passano di qui: restano esatti.
+  let rotTarget = null; // gradi, null = nessuna rotazione in corso (il valore mostrato è la rotazione reale della mappa)
+  let dot = null; // pallino GPS mostrato e obiettivo: {lat, lon, tLat, tLon}
+  let focus = null; // {lat, lon, tLat, tLon, ax, ay, tax, tay, zoom}: punto e ancora (px da el) mostrati / obiettivo
+  let animRaf = 0;
+  let animLast = 0;
+  let animMoved = false; // la mappa si è mossa dall'ultimo lavoro di fine movimento
+  let tileAt = 0;
+  let panNet = { x: 0, y: 0 }; // spostamento netto dall'ultimo ridisegno del canvas
+
+  const clearTargets = () => {
+    rotTarget = null;
+    focus = null;
+  };
+  const apartPx = (lat0, lon0, lat1, lon1) => {
+    const z = map.getZoom();
+    return map.project([lat0, lon0], z).distanceTo(map.project([lat1, lon1], z));
+  };
+  /** Salto grande: oltre JUMP_M metri o oltre lo schermo. */
+  const isFar = (lat0, lon0, lat1, lon1) => {
+    const size = map.getSize();
+    return map.distance([lat0, lon0], [lat1, lon1]) > JUMP_M || apartPx(lat0, lon0, lat1, lon1) > Math.max(size.x, size.y);
+  };
+  const focusLive = () => focus !== null && focus.zoom === map.getZoom();
+  const focusOffset = () => map.latLngToContainerPoint([focus.lat, focus.lon]).subtract([focus.ax, focus.ay]);
+  const dotBusy = () => dot !== null && apartPx(dot.lat, dot.lon, dot.tLat, dot.tLon) >= DONE_PX;
+  const focusBusy = () => {
+    if (!focusLive()) return false;
+    if (apartPx(focus.lat, focus.lon, focus.tLat, focus.tLon) >= DONE_PX || Math.abs(focus.ax - focus.tax) >= DONE_PX || Math.abs(focus.ay - focus.tay) >= DONE_PX) return true;
+    const o = focusOffset();
+    return Math.abs(o.x) >= DONE_PX || Math.abs(o.y) >= DONE_PX;
+  };
+  const animBusy = () => rotTarget !== null || dotBusy() || focusBusy();
+
+  // API PRIVATE di Leaflet, isolate qui: _rawPanBy sposta il pannello (in px schermo, come panBy ma senza moveend e
+  // senza troncare); GridLayer._update carica le tile mancanti, cioè ciò che fa moveend con updateWhenIdle, senza il
+  // ridisegno completo del canvas.
+  /** Sposta la mappa perché il fuoco stia sull'ancora. @returns {boolean} true se si è mossa */
+  const pinFocus = () => {
+    const o = focusOffset();
+    if (Math.abs(o.x) < 1e-3 && Math.abs(o.y) < 1e-3) return false;
+    map._rawPanBy(o);
+    map.fire('move');
+    panNet = { x: panNet.x + o.x, y: panNet.y + o.y };
+    return true;
+  };
+  const refreshTiles = () => {
+    if (typeof tileLayer._update === 'function') tileLayer._update();
+    else programmaticly(() => map.fire('moveend'));
+  };
+
+  /** Un passo di animazione di `dt` ms. */
+  function stepAnim(dt) {
+    let rotated = false;
+    let panned = false;
+    if (rotTarget !== null) {
+      let next = dampAngleStep(currentBearing(), rotTarget, dt, TAU_ROT_MS);
+      if (Math.abs(angleDiffDeg(next, rotTarget)) < DONE_DEG) {
+        next = rotTarget;
+        rotTarget = null;
+      }
+      programmaticly(() => map.setBearing(next));
+      rotated = true;
+    }
+    if (dot && (dot.lat !== dot.tLat || dot.lon !== dot.tLon)) {
+      dot.lat = dampStep(dot.lat, dot.tLat, dt, TAU_POS_MS);
+      dot.lon = dampStep(dot.lon, dot.tLon, dt, TAU_POS_MS);
+      if (apartPx(dot.lat, dot.lon, dot.tLat, dot.tLon) < DONE_PX) {
+        dot.lat = dot.tLat;
+        dot.lon = dot.tLon;
+      }
+      gpsMarker.setLatLng([dot.lat, dot.lon]);
+    }
+    if (focusLive()) {
+      const f = focus;
+      if (f.lat !== f.tLat || f.lon !== f.tLon || f.ax !== f.tax || f.ay !== f.tay) {
+        f.lat = dampStep(f.lat, f.tLat, dt, TAU_POS_MS);
+        f.lon = dampStep(f.lon, f.tLon, dt, TAU_POS_MS);
+        f.ax = dampStep(f.ax, f.tax, dt, TAU_POS_MS);
+        f.ay = dampStep(f.ay, f.tay, dt, TAU_POS_MS);
+        if (apartPx(f.lat, f.lon, f.tLat, f.tLon) < DONE_PX && Math.abs(f.ax - f.tax) < DONE_PX && Math.abs(f.ay - f.tay) < DONE_PX) {
+          f.lat = f.tLat;
+          f.lon = f.tLon;
+          f.ax = f.tax;
+          f.ay = f.tay;
+        }
+      }
+      panned = pinFocus();
+    }
+    if (!rotated && !panned) return;
+    animMoved = true;
+    const now = performance.now();
+    if (now - tileAt >= TILE_REFRESH_MS) {
+      tileAt = now;
+      refreshTiles();
+    }
+    // Se l'animazione dura a lungo (navigazione a piedi) il lavoro di fine movimento non arriverebbe mai:
+    // al massimo una volta al secondo, e solo se la vista è cambiata abbastanza, aggiorno frecce e salvataggio.
+    if (now - workAt >= MOVEEND_MAX_WAIT_MS) {
+      workAt = now;
+      const sz = map.getSize();
+      if (!workView || workView.z !== map.getZoom() || map.project(map.getCenter()).distanceTo(workView.c) > WORK_MOVE_FRACTION * Math.min(sz.x, sz.y)
+        || Math.abs(angleDiffDeg(workView.b, currentBearing())) > WORK_ROTATE_DEG) onMoveEnd();
+    }
+    // Con la rotazione ci pensa il plugin (ridisegna il canvas quando serve); senza rotazione lo faccio io.
+    const size = map.getSize();
+    if (!rotated && Math.hypot(panNet.x, panNet.y) > PAN_REDRAW_FRACTION * Math.min(size.x, size.y)) programmaticly(() => map.fire('moveend'));
+  }
+
+  function mapAnimFrame(ts) {
+    animRaf = 0;
+    if (blocked()) {
+      animLast = 0;
+      return; // gesto o zoom in corso: sospeso, riparte da wakeIfBusy()
+    }
+    const dt = animLast ? Math.min(Math.max(ts - animLast, 0), MAX_DT_MS) : 16;
+    animLast = ts;
+    stepAnim(dt);
+    if (animBusy()) {
+      animRaf = requestAnimationFrame(mapAnimFrame);
+      return;
+    }
+    animLast = 0;
+    if (animMoved) {
+      animMoved = false;
+      refreshAfterRotate(); // lavoro di fine movimento, accorpato
+    }
+  }
+  const wake = () => {
+    if (animRaf || blocked() || document.visibilityState === 'hidden') return;
+    animLast = 0;
+    animRaf = requestAnimationFrame(mapAnimFrame);
+  };
+  const wakeIfBusy = () => {
+    if (animBusy()) wake();
+  };
+  // Pagina nascosta o di ritorno: si arriva subito agli obiettivi, senza animazione.
+  document.addEventListener('visibilitychange', () => {
+    cancelAnimationFrame(animRaf);
+    animRaf = 0;
+    animLast = 0;
+    if (!blocked()) stepAnim(1e9);
+  });
+
+  /**
+   * Punta il fuoco su un punto con l'ancora indicata: animato se il salto è piccolo, subito se è grande,
+   * se lo zoom è cambiato o se lo zoom è esplicito.
+   */
+  function aimAt(lat, lon, tax, tay, zoom) {
+    const z = map.getZoom();
+    if (zoom !== undefined || !focus || focus.zoom !== z || isFar(focus.lat, focus.lon, lat, lon)) {
+      const zz = zoom ?? z;
+      focus = { lat, lon, tLat: lat, tLon: lon, ax: tax, ay: tay, tax, tay, zoom: zz };
+      const center = centerFor(lat, lon, zz, tax, tay);
+      programmaticly(() => map.setView(center, zz, { animate: false }));
+    } else {
+      focus.tLat = lat;
+      focus.tLon = lon;
+      focus.tax = tax;
+      focus.tay = tay;
+    }
+    wakeIfBusy();
+  }
+  const setRotTarget = (deg) => {
+    rotTarget = Math.abs(angleDiffDeg(currentBearing(), deg)) < DONE_DEG ? null : deg;
+  };
 
   return {
     /** Ricostruisce tracce, marcatori e frecce. */
@@ -401,12 +612,29 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
 
     /** gps {lat,lon,accuracy,weak} · lastSure {lat,lon,label} · estimate {lat,lon}; tutti opzionali. */
     setPositions({ gps, lastSure, estimate }) {
-      place(gpsMarker, gps && [gps.lat, gps.lon]);
       if (gps) {
+        // Il pallino scivola verso il nuovo punto (salto grande: subito); il cerchio di accuratezza, sul canvas, si
+        // aggiorna all'arrivo del dato e non a ogni fotogramma.
+        if (!dot || !map.hasLayer(gpsMarker) || isFar(dot.lat, dot.lon, gps.lat, gps.lon)) {
+          dot = { lat: gps.lat, lon: gps.lon, tLat: gps.lat, tLon: gps.lon };
+          place(gpsMarker, [gps.lat, gps.lon]);
+        } else {
+          dot.tLat = gps.lat;
+          dot.tLon = gps.lon;
+          wakeIfBusy();
+        }
         gpsMarker.getElement()?.firstChild.classList.toggle('weak', gps.weak);
-        accuracyCircle.setRadius(Math.max(gps.accuracy ?? 1, 1));
-        place(accuracyCircle, [gps.lat, gps.lon]);
+        const radius = Math.max(gps.accuracy ?? 1, 1);
+        const key = `${gps.lat}|${gps.lon}|${radius}`;
+        if (key !== accuracyKey || !map.hasLayer(accuracyCircle)) {
+          accuracyKey = key;
+          accuracyCircle.setRadius(radius);
+          place(accuracyCircle, [gps.lat, gps.lon]);
+        }
       } else {
+        dot = null;
+        accuracyKey = '';
+        place(gpsMarker, null);
         accuracyCircle.remove();
       }
       if (lastSure && lastSure.label !== sureLabel) {
@@ -442,6 +670,7 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     /** @param {number} [bottomInset] altezza coperta in basso (default: il pannello) */
     fitTracks(bottomInset = getBottomInset()) {
       if (!bounds) return;
+      clearTargets();
       if (currentBearing() !== 0) map.setBearing(0);
       map.fitBounds(bounds, { paddingTopLeft: [16, 80], paddingBottomRight: [16, bottomInset + 16], maxZoom: 16, animate: false });
     },
@@ -449,31 +678,34 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     /** Centra il punto nella parte di mappa non coperta dal pannello (a qualsiasi rotazione). */
     centerOn(lat, lon, zoom) {
       if (blocked()) return;
-      const bearing = currentBearing();
-      const moved = !lastCenter || Math.abs(lastCenter[0] - lat) > 2e-5 || Math.abs(lastCenter[1] - lon) > 2e-5 || lastCenter[2] !== bearing;
-      if (!moved && zoom === undefined) return;
-      lastCenter = [lat, lon, bearing];
-      const z = zoom ?? map.getZoom();
-      const center = centerFor(lat, lon, z, map.getSize().x / 2, visibleHeight() / 2);
-      programmaticly(() => map.setView(center, z, { animate: false }));
+      aimAt(lat, lon, map.getSize().x / 2, visibleHeight() / 2, zoom);
     },
 
     /** Navigazione: rotazione e posizione insieme; l'utente sta al centro in orizzontale e al 70% dell'altezza visibile. */
     navigate(lat, lon, bearing) {
       if (blocked()) return;
-      const b = normalizeDeg(bearing);
-      const z = map.getZoom();
-      programmaticly(() => {
-        map.setBearing(b);
-        map.setView(centerFor(lat, lon, z, map.getSize().x / 2, visibleHeight() * NAV_USER_FRACTION), z, { animate: false });
-      });
-      lastCenter = [lat, lon, currentBearing()];
+      setRotTarget(normalizeDeg(bearing));
+      aimAt(lat, lon, map.getSize().x / 2, visibleHeight() * NAV_USER_FRACTION);
+    },
+
+    /** Rotazione animata verso `deg` (senza spostare la mappa). */
+    rotateTo(deg) {
+      if (blocked()) return;
+      setRotTarget(normalizeDeg(deg));
+      wakeIfBusy();
     },
 
     /** Rotazione immediata, senza animazione (il nord appare a `deg` gradi in senso orario). */
     setBearing(deg) {
       if (blocked()) return;
+      rotTarget = null;
       programmaticly(() => map.setBearing(normalizeDeg(deg)));
+      if (focusLive()) pinFocus(); // il fuoco resta fermo sull'ancora
+    },
+
+    /** Ferma gli obiettivi di mappa (rotazione e inseguimento); il pallino finisce il suo scorrimento. */
+    stopAnimation() {
+      clearTargets();
     },
 
     getBearing() {
@@ -492,6 +724,7 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUser
     },
 
     setView({ lat, lon, zoom, bearing }) {
+      clearTargets();
       map.setBearing(normalizeDeg(bearing ?? 0));
       map.setView([lat, lon], zoom, { animate: false });
     },

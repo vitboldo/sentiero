@@ -127,7 +127,8 @@ function renderStatus({ level, text }) {
 function renderBanner(info) {
   $('banner').hidden = !info;
   if (!info) return;
-  $('banner-text').textContent = info.text;
+  const text = $('banner-text');
+  if (text.textContent !== info.text) text.textContent = info.text; // chiamata a ogni fotogramma di rotazione
   $('banner-arrow').style.transform = `rotate(${info.bearing}deg)`;
 }
 

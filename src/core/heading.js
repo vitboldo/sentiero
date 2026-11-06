@@ -117,3 +117,41 @@ export function createHeadingFilter({ tauMs = 300, maxAccuracy = 30, staleMs = 3
     },
   };
 }
+
+/**
+ * Coefficiente di avvicinamento esponenziale per un passo di `dtMs` con costante di tempo `tauMs`:
+ * 0 senza tempo trascorso, tende a 1 per dt grandi, 1 se `tauMs` non è positivo. Indipendente dal frame rate.
+ * @param {number} dtMs
+ * @param {number} tauMs
+ * @returns {number} in [0,1]
+ */
+export function dampFactor(dtMs, tauMs) {
+  if (!Number.isFinite(dtMs) || dtMs <= 0) return 0;
+  if (!(tauMs > 0)) return 1;
+  return 1 - Math.exp(-dtMs / tauMs);
+}
+
+/**
+ * Un passo di smorzamento esponenziale di un valore lineare verso `target`.
+ * @param {number} current
+ * @param {number} target
+ * @param {number} dtMs
+ * @param {number} tauMs
+ * @returns {number}
+ */
+export function dampStep(current, target, dtMs, tauMs) {
+  return current + (target - current) * dampFactor(dtMs, tauMs);
+}
+
+/**
+ * Come `dampStep` per un angolo in gradi: passa sempre dalla parte corta (350 → 10 attraversa lo 0),
+ * a 180 gradi esatti gira in senso orario. Il risultato è in [0,360).
+ * @param {number} current
+ * @param {number} target
+ * @param {number} dtMs
+ * @param {number} tauMs
+ * @returns {number}
+ */
+export function dampAngleStep(current, target, dtMs, tauMs) {
+  return normalizeDeg(current + angleDiffDeg(current, target) * dampFactor(dtMs, tauMs));
+}

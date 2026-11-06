@@ -15,7 +15,7 @@ const COLORS = ['#d62828', '#00838f', '#c2185b', '#6d4c41', '#827717', '#37474f'
 const FRESH_MS = 15000;
 const PERSIST_EVERY_MS = 10000;
 const COMPASS_STEP_MS = 100;
-const NAV_DEADZONE_DEG = 1.5;
+const NAV_DEADZONE_DEG = 1; // i passi più piccoli li assorbe lo smorzamento della mappa
 const COMPASS_LOST_MS = 5000;
 const GEO_OPTIONS = { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 };
 
@@ -299,6 +299,7 @@ function setViewMode(mode) {
   state.viewMode = mode;
   state.unreliableSince = 0;
   state.navFallback = false;
+  if (mode === 'free') map.stopAnimation();
   ui.setViewMode(mode);
 }
 
@@ -310,7 +311,7 @@ function leaveNav(to = 'follow') {
 /** Navigazione: rotazione dell'ultima lettura, utente in basso nell'area visibile. Senza posizione ruota soltanto. */
 function applyNav(pos = currentPosition()) {
   if (pos) map.navigate(pos.lat, pos.lon, state.navBearing);
-  else map.setBearing(state.navBearing);
+  else map.rotateTo(state.navBearing);
 }
 
 function notifyCompassOnce(message) {

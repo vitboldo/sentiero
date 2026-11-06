@@ -4,6 +4,7 @@
 // screen.orientation.angle = 90: lo script lo forza a window.__ang (default 0).
 import { FILES3, ck, closeSheet, importFiles, nodeTracks, note, offset, openApp, scenario, SHOTS, txt } from './harness.mjs';
 import { buildRoute } from '../src/core/route.js';
+import { haversineM } from '../src/core/geo.js';
 
 const route = buildRoute(nodeTracks(FILES3));
 const at = (q) => ({ lat: q.lat, lon: q.lon });
@@ -15,8 +16,11 @@ export function compassInit({ perm = 'granted', events = true, api = true } = {}
     window.__perm = ${JSON.stringify(perm)}; window.__permCalls = []; window.__h = 90; window.__acc = 5; window.__send = ${events};
     window.__ang = 0;
     try { Object.defineProperty(Object.getPrototypeOf(screen.orientation), 'angle', { get: () => window.__ang, configurable: true }); } catch (e) { window.__angErr = String(e); }
-    window.__raf = 0; const _raf = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = (f) => { if (f.name === 'compassLoop') window.__raf++; return _raf(f); };
+    window.__raf = 0; window.__animRaf = 0; const _raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (f) => { if (f.name === 'compassLoop') window.__raf++; if (f.name === 'mapAnimFrame') window.__animRaf++; return _raf(f); };
+    // campiona fn() a ogni fotogramma per ms millisecondi (il primo campione è subito)
+    window.__rec = (fn, ms) => new Promise((resolve) => { const out = []; const t0 = performance.now(); const loop = () => { out.push(fn()); if (performance.now() - t0 < ms) requestAnimationFrame(loop); else resolve(out); }; loop(); });
+    window.__gpsRel = () => { const m = document.getElementById('map').getBoundingClientRect(); const r = document.querySelector('.mk-gps').getBoundingClientRect(); return { x: r.x + r.width / 2 - m.x, y: r.y + r.height / 2 - m.y }; };
     window.__doAdd = 0; window.__doRem = 0;
     const _add = window.addEventListener.bind(window), _rem = window.removeEventListener.bind(window);
     window.addEventListener = (t, ...r) => { if (t === 'deviceorientation') window.__doAdd++; return _add(t, ...r); };
@@ -146,15 +150,21 @@ export async function scenariosD() {
     ckAng('nav: rotazione = 360 - 90 (il nord si sposta, la direzione 90 va in alto)', s.bearing, 270, 2);
     ck('nav: nessuna nuova richiesta di permesso', (await p.evaluate(() => window.__permCalls.length)) === 1);
 
-    // la rotazione segue la bussola: a ogni direzione bearing = 360 - direzione (zona morta 1,5°)
+    // la rotazione segue la bussola: a ogni direzione bearing = 360 - direzione (zona morta 1°)
     await setHeading(p, 200);
     await W(p, 1800);
     ckAng('bussola 200 → rotazione 160', (await st(p)).bearing, 160, 2);
-    // zona morta di 1,5° rispetto alla rotazione applicata: il bersaglio è b0 + 1, quindi non ruota
+    // zona morta di 1° rispetto alla rotazione applicata: il bersaglio è b0 + 0,6, quindi non ruota
+    // (con +1 esatto il test dipenderebbe dall'arrotondamento in virgola mobile: stava sul bordo della soglia)
     const b0 = (await st(p)).bearing;
-    await setHeading(p, 360 - b0 - 1);
+    await setHeading(p, 360 - b0 - 0.6);
     await W(p, 1500);
-    ck('zona morta: bersaglio a +1 grado dalla rotazione attuale non ruota', (await st(p)).bearing === b0, [b0, (await st(p)).bearing]);
+    ck('zona morta: bersaglio a +0,6 gradi dalla rotazione attuale non ruota', (await st(p)).bearing === b0, [b0, (await st(p)).bearing]);
+    await setHeading(p, 360 - b0 - 1.5);
+    await W(p, 1500);
+    // la zona morta lascia al più 1° di errore: ruota appena il bersaglio la supera
+    const moved = Math.abs(angDiff(b0, (await st(p)).bearing));
+    ck('oltre la zona morta (+1,5 gradi): ruota (di almeno 0,9 e al più 1,6 gradi)', moved >= 0.9 && moved <= 1.6, moved);
     await setHeading(p, 205);
     await W(p, 1500);
     ckAng('+5 gradi: ruota', (await st(p)).bearing, 155, 2);
@@ -218,6 +228,7 @@ export async function scenariosD() {
     await tap(p, 400);
     await tap(p, 600);
     ck('in nav', (await st(p)).mode === 'nav');
+    await W(p, 2000); // assestamento: la mappa scivola verso l'ancora al 70% e ruota
 
     // posizione in nav: orizzontale al centro, verticale al 70% dell'area visibile
     const g = await gpsXY(p);
@@ -447,6 +458,7 @@ export async function scenariosD() {
     ck('cono nascosto quando inaffidabile', (await coneAngle(p)).display === 'none');
     const toastShown = () => p.waitForFunction(() => { const t = document.getElementById('toast'); return t.classList.contains('show') && /Bussola non affidabile/.test(t.textContent); }, null, { timeout: 9000 });
     await toastShown();
+    await W(p, 1200); // assestamento: la rotazione torna a 0 con l'animazione
     let s = await st(p);
     ck('inaffidabile da più di 5 s: rotazione 0, resta in nav', Math.abs(angDiff(0, s.bearing)) < 0.5 && s.mode === 'nav', s);
     ck('toast: mappa con il nord in alto', /Bussola non affidabile: mappa con il nord in alto/.test(await toast(p)), await toast(p));
@@ -610,5 +622,247 @@ export async function scenariosD() {
     ck('in follow la bussola non ruota più la mappa', Math.abs(angDiff(after.bearing, (await st(p)).bearing)) < 1, (await st(p)).bearing);
     ck('bussolina visibile con mappa ruotata', await p.evaluate(() => !document.getElementById('btn-north').hidden));
     ck('nessun errore', app.errors.length === 0, app.errors);
+  });
+
+  // ------------------------------------------------------------------ 49 .. 54: transizioni automatiche fluide
+  const P0 = route.points[10];
+  const fixAt = (dx, dy) => ({ accuracy: 8, ...offset(P0.lat, P0.lon, dx, dy) });
+  /** Invia un fix e campiona a ogni fotogramma pallino (px dalla mappa) e centro della mappa. */
+  const glide = (p, fix, ms) => p.evaluate(({ fix, ms }) => {
+    window.__sentiero.injectFix(fix);
+    return window.__rec(() => ({ ...window.__gpsRel(), c: window.__sentiero.view() }), ms);
+  }, { fix, ms });
+  const dist = (a, b) => haversineM({ lat: a.lat, lon: a.lon }, { lat: b.lat, lon: b.lon });
+  const animDelta = async (p, ms) => {
+    const a = await p.evaluate(() => window.__animRaf);
+    await W(p, ms);
+    return (await p.evaluate(() => window.__animRaf)) - a;
+  };
+
+  await scenario(49, 'Transizioni: in follow e in nav mappa e pallino scivolano insieme (pallino fermo a schermo); in free il pallino scivola da solo', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, at(P0));
+    await tap(p, 400); // follow
+    await W(p, 1000);
+    for (const mode of ['follow', 'nav']) {
+      if (mode === 'nav') {
+        await tap(p, 400);
+        await W(p, 2500); // assestamento: rotazione e ancora al 70%
+        ck('in nav', (await st(p)).mode === 'nav');
+      }
+      const a = await gpsXY(p);
+      const vis = a.h - a.panel;
+      const anchor = { x: a.w / 2, y: mode === 'nav' ? vis * 0.7 : vis / 2 };
+      ck(`${mode}: a riposo il pallino sta sull'ancora (±3 px)`, Math.abs(a.x - anchor.x) < 3 && Math.abs(a.y - anchor.y) < 3, [a, anchor]);
+      const dx = mode === 'nav' ? -25 : 25;
+      const samples = await glide(p, fixAt(dx, 12), 1600);
+      const c0 = samples[0].c;
+      const cEnd = samples[samples.length - 1].c;
+      const total = dist(c0, cEnd);
+      const frac = samples.map((s) => (total > 0 ? dist(c0, s.c) / total : 0));
+      const dev = Math.max(...samples.map((s) => Math.hypot(s.x - anchor.x, s.y - anchor.y)));
+      ck(`${mode}: la mappa si sposta davvero (>15 m)`, total > 15, total);
+      ck(`${mode}: al primo fotogramma la mappa non è già arrivata (<50%)`, frac[0] < 0.5, frac.slice(0, 3));
+      ck(`${mode}: la mappa scivola, almeno 6 fotogrammi intermedi (10-90%)`, frac.filter((f) => f > 0.1 && f < 0.9).length >= 6, frac.map((f) => +f.toFixed(2)));
+      ck(`${mode}: il percorso della mappa è monotono (nessun andirivieni)`, frac.every((f, i) => i === 0 || f >= frac[i - 1] - 0.02), frac.map((f) => +f.toFixed(2)));
+      ck(`${mode}: il pallino resta fermo sullo schermo durante tutto lo scorrimento (±1,5 px)`, dev < 1.5, dev);
+      await p.screenshot({ path: `${SHOTS}\\49-${mode}-fine.png` });
+    }
+    // libera: la mappa resta ferma, il pallino scivola da solo
+    await tap(p, 300);
+    ck('nav→free', (await st(p)).mode === 'free');
+    await W(p, 800);
+    const samples = await glide(p, fixAt(-40, 30), 1600);
+    const c0 = samples[0].c;
+    ck('free: la mappa non si muove (<0,05 m)', samples.every((s) => dist(c0, s.c) < 0.05), Math.max(...samples.map((s) => dist(c0, s.c))));
+    const d0 = samples[0];
+    const dEnd = samples[samples.length - 1];
+    const tot = Math.hypot(dEnd.x - d0.x, dEnd.y - d0.y);
+    const f = samples.map((s) => Math.hypot(s.x - d0.x, s.y - d0.y) / tot);
+    ck('free: il pallino si sposta (>5 px)', tot > 5, tot);
+    ck('free: al primo fotogramma il pallino non è già arrivato (<50%)', f[0] < 0.5, f.slice(0, 3));
+    ck('free: il pallino scivola, almeno 6 fotogrammi intermedi', f.filter((v) => v > 0.1 && v < 0.9).length >= 6, f.map((v) => +v.toFixed(2)));
+  });
+
+  await scenario(50, 'Transizioni: la rotazione passa sempre dalla parte corta (350↔10), con valori intermedi', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, at(P0));
+    await tap(p, 400);
+    await setHeading(p, 10); // rotazione 350
+    await tap(p, 600);
+    await W(p, 2500);
+    ckAng('in nav a 350', (await st(p)).bearing, 350, 1);
+    const track = (target) => p.evaluate((h) => {
+      window.__h = h;
+      return window.__rec(() => window.__sentiero.bearing(), 2500);
+    }, target);
+    for (const [from, to, heading] of [[350, 10, 350], [10, 350, 10]]) {
+      const b = await track(heading);
+      const un = b.map((v) => from + angDiff(from, v)); // angolo srotolato rispetto alla partenza
+      const inside = (v) => v >= 345 || v <= 15; // l'arco corto, con 1-2° di margine per la zona morta della bussola
+      ck(`${from}→${to}: ogni valore intermedio sta tra 350 e 10 passando dallo 0 (mai dalla parte lunga)`, b.every(inside), b.filter((v) => !inside(v)).slice(0, 5));
+      const sign = angDiff(from, to) > 0 ? 1 : -1;
+      ck(`${from}→${to}: andamento monotono (dopo il primo fotogramma, tolleranza 0,3° per l'assestamento del filtro bussola)`, un.every((v, i) => i === 0 || (v - un[i - 1]) * sign >= -0.3), un.map((v) => +v.toFixed(1)));
+      const mid = b.filter((v) => Math.abs(angDiff(v, from)) > 1 && Math.abs(angDiff(v, to)) > 1);
+      ck(`${from}→${to}: almeno 6 fotogrammi intermedi`, mid.length >= 6, mid.length);
+      const maxStep = Math.max(...b.slice(1).map((v, i) => Math.abs(angDiff(b[i], v))));
+      ck(`${from}→${to}: nessuno scatto (passo massimo tra fotogrammi ≤ 9°)`, maxStep <= 9, +maxStep.toFixed(1));
+      ckAng(`${from}→${to}: arriva a ${to} (la zona morta di 1° può lasciare fino a 1° di scarto)`, b[b.length - 1], to, 1.2);
+    }
+  });
+
+  await scenario(51, 'Transizioni: il motore si ferma a fine animazione (nessun rAF inutile) e riparte al nuovo obiettivo', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, at(P0));
+    await tap(p, 400);
+    await tap(p, 600);
+    await W(p, 3000);
+    ck('in nav, ferma', (await st(p)).mode === 'nav');
+    const loopBefore = await p.evaluate(() => window.__raf);
+    ck('a riposo in nav: nessun rAF del motore in 2,5 s (il tick da 1 s e la bussola girano)', (await animDelta(p, 2500)) === 0);
+    ck('(controllo) il ciclo bussola intanto è vivo', (await p.evaluate(() => window.__raf)) - loopBefore > 20);
+    await inject(p, fixAt(20, 15));
+    await W(p, 400);
+    ck('nuovo obiettivo: il motore riparte', (await p.evaluate(() => window.__animRaf)) > 3);
+    await W(p, 3600);
+    ck('dopo l\'arrivo: di nuovo nessun rAF in 2 s', (await animDelta(p, 2000)) === 0);
+    // libera: solo il pallino
+    await tap(p, 300);
+    await W(p, 500);
+    await inject(p, fixAt(-20, 5));
+    await W(p, 400);
+    ck('free: il pallino in movimento usa il motore', (await p.evaluate(() => window.__animRaf)) > 0);
+    await W(p, 3600);
+    ck('free: arrivato, nessun rAF in 2 s', (await animDelta(p, 2000)) === 0);
+    // la bussola cambia la rotazione: parte e si ferma
+    await tap(p, 300);
+    await tap(p, 300);
+    await W(p, 2500);
+    await setHeading(p, 200);
+    await W(p, 3500);
+    ck('rotazione arrivata, nessun rAF in 2 s', (await animDelta(p, 2000)) === 0);
+    ckAng('rotazione arrivata a 160', (await st(p)).bearing, 160, 1.5);
+  });
+
+  await scenario(52, 'Transizioni: salti grandi, zoom esplicito, cambio di zoom e ritorno da pagina nascosta sono immediati', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, at(P0));
+    // zoom esplicito (tocco su Centra): subito
+    await p.click('#btn-locate');
+    const a = await p.evaluate(() => ({ ...window.__gpsRel(), ...(() => { const m = document.getElementById('map').getBoundingClientRect(); return { w: m.width, h: m.height, panel: document.getElementById('panel').offsetHeight }; })() }));
+    ck('tocco su Centra: il pallino è subito al centro dell\'area libera (±3 px)', Math.abs(a.x - a.w / 2) < 3 && Math.abs(a.y - (a.h - a.panel) / 2) < 3, a);
+    await W(p, 1000);
+    // salto grande (400 m) in follow: subito
+    let s = await glide(p, fixAt(400, 0), 500);
+    ck('follow, salto di 400 m: il pallino è sull\'ancora già al primo fotogramma (±2 px)', Math.hypot(s[0].x - a.w / 2, s[0].y - (a.h - a.panel) / 2) < 2, s[0]);
+    ck('follow, salto di 400 m: nessun fotogramma intermedio', s.every((q) => Math.hypot(q.x - a.w / 2, q.y - (a.h - a.panel) / 2) < 2));
+    await W(p, 800);
+    ck('follow, salto di 400 m: il motore è già fermo', (await animDelta(p, 800)) <= 1);
+    // cambio di zoom: al fix successivo la mappa si riporta sull'ancora subito
+    await p.click('.leaflet-control-zoom-in');
+    await W(p, 700);
+    s = await glide(p, fixAt(402, 2), 400);
+    ck('dopo il cambio di zoom: il pallino è sull\'ancora già al primo fotogramma (±2 px)', Math.hypot(s[0].x - a.w / 2, s[0].y - (a.h - a.panel) / 2) < 2, s[0]);
+    // nav: salto grande subito, poi ritorno da pagina nascosta
+    await tap(p, 400);
+    await W(p, 2500);
+    const vis = a.h - a.panel;
+    s = await glide(p, fixAt(900, 100), 400);
+    ck('nav, salto di 900 m: il pallino è sull\'ancora al 70% già al primo fotogramma (±2 px)', Math.hypot(s[0].x - a.w / 2, s[0].y - vis * 0.7) < 2, [s[0], vis * 0.7]);
+    await W(p, 600);
+    const hidden = await p.evaluate((fix) => {
+      window.__sentiero.injectFix(fix);
+      window.__vis = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      return { ...window.__gpsRel(), anim: window.__animRaf };
+    }, fixAt(925, 110));
+    ck('pagina nascosta con animazione in corso: arriva subito all\'obiettivo (±1,5 px)', Math.hypot(hidden.x - a.w / 2, hidden.y - vis * 0.7) < 1.5, hidden);
+    ck('pagina nascosta: il motore resta fermo', (await animDelta(p, 600)) === 0);
+    await p.evaluate(() => { window.__vis = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+  });
+
+  await scenario(53, 'Transizioni: il trascinamento cancella l\'obiettivo di mappa e non si combatte col dito', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, at(P0));
+    await tap(p, 400);
+    await tap(p, 600);
+    await W(p, 2500);
+    ck('in nav', (await st(p)).mode === 'nav');
+    await inject(p, fixAt(-30, 20)); // l'animazione parte
+    await p.mouse.move(200, 300);
+    await p.mouse.down();
+    await p.mouse.move(150, 320, { steps: 4 });
+    await p.mouse.move(100, 340, { steps: 4 });
+    await W(p, 300); // fermo prima di rilasciare: niente inerzia di Leaflet
+    await p.mouse.up();
+    ck('trascinamento: passa a free', (await st(p)).mode === 'free', await st(p));
+    await W(p, 200);
+    const v1 = await p.evaluate(() => window.__sentiero.view());
+    const rot1 = (await st(p)).bearing;
+    await W(p, 2000);
+    const v2 = await p.evaluate(() => window.__sentiero.view());
+    ck('dopo il rilascio la mappa non si muove più verso il vecchio obiettivo (<0,5 m)', dist(v1, v2) < 0.5, dist(v1, v2));
+    ckAng('dopo il rilascio la rotazione non cambia', (await st(p)).bearing, rot1, 0.3);
+    ck('il pallino ha finito di scorrere e il motore è fermo', (await animDelta(p, 1000)) === 0);
+  });
+
+  await scenario(54, 'Transizioni: due dita sospendono l\'animazione e non la combattono (Chromium, CDP)', 'chromium', async (use) => {
+    const app = use(await openCompass({}, 'chromium'));
+    const p = app.page;
+    await inject(p, at(P0));
+    await tap(p, 400); // follow
+    await W(p, 1000);
+    const a = await gpsXY(p);
+    const c = await gpsPage(p);
+    const cdp = await app.ctx.newCDPSession(p);
+    const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+    await inject(p, fixAt(30, 20)); // l'animazione parte
+    await touch('touchStart', [[c.x + 70, c.y], [c.x - 70, c.y]]);
+    const before = await p.evaluate(() => ({ anim: window.__animRaf, v: window.__sentiero.view() }));
+    await W(p, 600);
+    const during = await p.evaluate(() => ({ anim: window.__animRaf, v: window.__sentiero.view() }));
+    ck('con due dita appoggiate il motore è sospeso (nessun rAF)', during.anim - before.anim <= 1, during.anim - before.anim);
+    ck('con due dita appoggiate la mappa non si muove (<0,3 m)', dist(before.v, during.v) < 0.3, dist(before.v, during.v));
+    await touch('touchEnd', []);
+    await W(p, 2500);
+    const g = await gpsXY(p);
+    ck('a dita sollevate l\'animazione riprende e arriva: pallino sull\'ancora (±3 px)', Math.hypot(g.x - a.x, g.y - a.y) < 3, [g, a]);
+    ck('e poi il motore si ferma', (await animDelta(p, 1000)) === 0);
+    ck('nessun errore', app.errors.length === 0, app.errors);
+  });
+
+  await scenario(55, 'Transizioni: la freccia del banner usa la rotazione mostrata, anche a metà animazione', 'webkit', async (use) => {
+    const app = use(await openCompass());
+    const p = app.page;
+    await inject(p, offset(start.lat, start.lon, 300, 0)); // 300 m a est dell'inizio: fuori traccia
+    await p.waitForSelector('#banner:not([hidden])', { timeout: 5000 });
+    const geo = await p.evaluate(() => window.__sentiero.snapshot().bearingToTrackDeg);
+    await tap(p, 400);
+    await tap(p, 600);
+    await W(p, 2500);
+    ck('in nav', (await st(p)).mode === 'nav');
+    const samples = await p.evaluate((h) => {
+      window.__h = h; // rotazione da 270 a 160
+      return window.__rec(() => {
+        const m = new DOMMatrixReadOnly(getComputedStyle(document.getElementById('banner-arrow')).transform);
+        const g = document.querySelector('.mk-gps').getBoundingClientRect();
+        const s = document.querySelector('.mk-start').getBoundingClientRect();
+        return {
+          bearing: window.__sentiero.bearing(),
+          arrow: (Math.atan2(m.b, m.a) * 180) / Math.PI,
+          real: (Math.atan2(s.x + s.width / 2 - (g.x + g.width / 2), -(s.y + s.height / 2 - (g.y + g.height / 2))) * 180) / Math.PI,
+        };
+      }, 2500);
+    }, 200);
+    const mid = samples.filter((q) => Math.abs(angDiff(q.bearing, 270)) > 5 && Math.abs(angDiff(q.bearing, 160)) > 5);
+    ck('campionati almeno 5 fotogrammi a metà animazione', mid.length >= 5, mid.length);
+    ck('freccia = direzione geografica + rotazione mostrata, a ogni fotogramma (±1,5°)', samples.every((q) => Math.abs(angDiff(q.arrow, geo + q.bearing)) < 1.5), samples.filter((q) => Math.abs(angDiff(q.arrow, geo + q.bearing)) >= 1.5).slice(0, 3));
+    ck('freccia = angolo reale a schermo verso la traccia, a ogni fotogramma (±4°)', samples.every((q) => Math.abs(angDiff(q.arrow, q.real)) < 4), samples.filter((q) => Math.abs(angDiff(q.arrow, q.real)) >= 4).slice(0, 3));
+    ckAng('rotazione finale 160', samples[samples.length - 1].bearing, 160, 1.5);
   });
 }

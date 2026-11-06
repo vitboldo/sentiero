@@ -18,9 +18,14 @@ Web app (PWA) per seguire tracce GPX in montagna, pensata per iPhone e per l'uso
 - [ ] Porta una power bank.
 - [ ] Tieni una copia del percorso in un'altra app o su carta.
 
+## Navigazione
+
+Il pulsante di posizione ha tre stati: al primo tocco la mappa ti segue con il nord in alto, al secondo gira con l'iPhone (**Navigazione**), al terzo torna libera. Con due dita puoi ruotarla e ingrandirla; la bussolina in alto a destra riporta il nord in alto. Al primo tocco iOS chiede il permesso per la bussola: va consentito per vedere il cono di direzione e usare la Navigazione.
+
 ## Limiti noti
 
 - Con lo schermo bloccato iOS sospende il GPS: al ritorno l'app stima la posizione a partire dall'ultimo punto sicuro.
+- La bussola indica il nord magnetico (in Italia lo scarto dal nord geografico è di pochi gradi) e risente di metalli e magneti vicini: non sostituisce una bussola vera. iOS può richiedere il permesso a ogni apertura dell'app.
 - Le mappe sono di [OpenTopoMap](https://opentopomap.org). Attribuzione: Kartendaten: © OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: © OpenTopoMap (CC-BY-SA).
 
 ## Test
@@ -36,3 +41,7 @@ Test end-to-end (Playwright, iPhone 15; tile stubbate, nessuna richiesta reale a
 npx playwright install webkit chromium
 npm run e2e
 ```
+
+## Licenza
+
+[GPL-3.0](LICENSE). Include [Leaflet](https://leafletjs.com) (BSD-2-Clause) e [leaflet-rotate](https://github.com/Raruto/leaflet-rotate) (GPL-3.0).

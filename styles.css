@@ -57,6 +57,7 @@ p { margin: 0; }
 .btn.danger { border-color: var(--lost); color: var(--lost); }
 .btn:disabled { opacity: 0.4; }
 .btn[aria-pressed="true"] { background: var(--gps); border-color: var(--gps); color: #fff; }
+.btn[data-view-mode="nav"][aria-pressed="true"] { background: var(--ok); border-color: var(--ok); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 
 /* Stato GPS e banner */
@@ -108,6 +109,24 @@ p { margin: 0; }
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 }
 #banner-arrow { width: 36px; height: 36px; flex: none; }
+
+/* Bussolina: sotto i controlli di zoom (2 x 48 px + bordi), allineata a destra */
+#btn-north {
+  position: absolute;
+  z-index: 20;
+  top: calc(var(--safe-t) + 126px);
+  right: calc(var(--safe-r) + 10px);
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+#btn-north svg { display: block; width: 100%; height: 100%; }
+#north-needle { transform-origin: 24px 24px; transform: rotate(var(--map-bearing, 0deg)); }
 
 /* Pannello */
 #panel {
@@ -184,6 +203,10 @@ p { margin: 0; }
 
 .mk-gps { width: 24px; height: 24px; border: 4px solid #fff; border-radius: 50%; background: var(--gps); box-shadow: 0 0 0 2px var(--gps), 0 1px 6px rgba(0, 0, 0, 0.6); }
 .mk-gps.weak { background: #fff; border-color: var(--gps); box-shadow: 0 0 0 2px #fff; }
+.mk-gps { position: relative; z-index: 1; }
+/* Cono di direzione: settore di 60 gradi con la punta sul centro del pallino, dietro di esso. */
+.mk-cone { display: none; position: absolute; z-index: 0; left: 50%; top: 50%; width: 90px; height: 90px; margin: -90px 0 0 -45px; pointer-events: none; transform-origin: 50% 100%; transform: rotate(calc(var(--heading, 0deg) + var(--map-bearing, 0deg))); background: conic-gradient(from -30deg at 50% 100%, rgba(0, 87, 217, 0.55) 0deg, rgba(0, 87, 217, 0.55) 60deg, transparent 60deg); -webkit-mask-image: radial-gradient(circle at 50% 100%, #000 0, rgba(0, 0, 0, 0) 90px); mask-image: radial-gradient(circle at 50% 100%, #000 0, rgba(0, 0, 0, 0) 90px); }
+.has-heading > .mk-cone { display: block; }
 .mk-sure { text-align: center; }
 .mk-sure i { display: block; width: 20px; height: 20px; margin: 0 auto; background: var(--sure); border: 3px solid #fff; transform: rotate(45deg); box-shadow: 0 1px 5px rgba(0, 0, 0, 0.6); }
 .mk-sure b { display: inline-block; margin-top: 6px; padding: 1px 6px; border-radius: 6px; background: var(--sure); color: #fff; font-size: 16px; }

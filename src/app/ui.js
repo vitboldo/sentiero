@@ -123,6 +123,7 @@ function renderStatus({ level, text }) {
   $('status-text').textContent = text;
 }
 
+/** @param {{text:string, bearing:number}|null} info  `bearing`: angolo della freccia sullo schermo (già corretto per la rotazione della mappa) */
 function renderBanner(info) {
   $('banner').hidden = !info;
   if (!info) return;
@@ -155,10 +156,25 @@ function renderPanel(m) {
   $('profile-label').textContent = m.profileLabel;
 }
 
-function setFollow(on) {
+const VIEW_MODES = {
+  free: { label: 'Centra su di me', pressed: false },
+  follow: { label: 'Seguo la posizione', pressed: true },
+  nav: { label: 'Navigazione', pressed: true },
+};
+
+/** @param {'free'|'follow'|'nav'} mode */
+function setViewMode(mode) {
   const btn = $('btn-locate');
-  btn.setAttribute('aria-pressed', String(on));
-  btn.textContent = on ? 'Seguo la posizione' : 'Centra su di me';
+  btn.dataset.viewMode = mode;
+  btn.setAttribute('aria-pressed', String(VIEW_MODES[mode].pressed));
+  btn.textContent = VIEW_MODES[mode].label;
+}
+
+/** Bussolina: visibile solo con la mappa ruotata; l'ago segue la rotazione (gradi, senso orario). */
+function setNorth(deg) {
+  const btn = $('btn-north');
+  btn.hidden = Math.abs(((deg + 180) % 360) - 180) < 0.5;
+  btn.style.setProperty('--map-bearing', `${deg}deg`);
 }
 
 function showScrub(text) {
@@ -548,6 +564,7 @@ export function createUi(actionHandlers) {
   $('btn-tracks').addEventListener('click', () => openSheet('tracks'));
   $('btn-offline').addEventListener('click', () => openSheet('offline'));
   $('btn-locate').addEventListener('click', () => actions.locate());
+  $('btn-north').addEventListener('click', () => actions.northUp());
   $('status').addEventListener('click', () => actions.statusTap());
   $('scope').addEventListener('click', (e) => {
     const mode = e.target.dataset?.mode;
@@ -558,7 +575,7 @@ export function createUi(actionHandlers) {
   new ResizeObserver(() => root.style.setProperty('--panel-h', `${$('panel').offsetHeight}px`)).observe($('panel'));
 
   return {
-    renderStatus, renderBanner, renderPanel, setFollow, showScrub, hideScrub,
+    renderStatus, renderBanner, renderPanel, setViewMode, setNorth, showScrub, hideScrub,
     setTracks, showImportReport, toast, showWelcome, askUpdate,
     getBottomInset: () => $('panel').offsetHeight,
   };

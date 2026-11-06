@@ -9,7 +9,8 @@ import { haversineM } from '../src/core/geo.js';
 const rowNames = (p) => p.locator('.track .track-name strong').allTextContents();
 const rowMeta = (p) => p.locator('.track .meta').allTextContents();
 const rowOf = (p, name) => p.locator('.track', { hasText: name }).first();
-const arrows = (p) => p.evaluate(() => [...document.querySelectorAll('.mk-arrow svg')].map((s) => Number(/rotate\((-?[\d.]+)deg\)/.exec(s.style.transform)?.[1])));
+// Stile: rotate(calc(Ndeg + var(--map-bearing, 0deg))); N è l'angolo della freccia sulla traccia (senza rotazione mappa).
+const arrows = (p) => p.evaluate(() => [...document.querySelectorAll('.mk-arrow svg')].map((s) => Number(/rotate\(calc\((-?[\d.]+)deg/.exec(s.style.transform)?.[1])));
 
 export async function scenariosA() {
   // ------------------------------------------------------------------ 1

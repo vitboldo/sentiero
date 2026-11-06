@@ -6,6 +6,7 @@ import { scenariosA } from './scenarios-a.mjs';
 import { scenariosA2 } from './scenarios-a2.mjs';
 import { scenariosB } from './scenarios-b.mjs';
 import { scenariosC, scenariosPerf } from './scenarios-c.mjs';
+import { scenariosD } from './scenarios-d.mjs';
 
 const srv = await startStatic();
 console.log(`server statico su ${srv.origin}`);
@@ -14,6 +15,7 @@ try {
   await scenariosA2();
   await scenariosB();
   await scenariosC();
+  await scenariosD();
   await scenariosPerf();
 } finally {
   await closeBrowsers();

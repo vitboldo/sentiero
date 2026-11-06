@@ -5,16 +5,16 @@ Non registra tracce. Apre, segue, modifica in modo basilare.
 
 ## Vincoli tecnici
 - Solo file statici, nessun passo di build, ES modules nativi, JS con JSDoc. Tutti i percorsi RELATIVI (GitHub Pages in sottocartella).
-- Nessuna dipendenza runtime da CDN: Leaflet 1.9.4 in `vendor/leaflet/`. Niente analytics, niente dati inviati a server.
+- Nessuna dipendenza runtime da CDN: Leaflet 1.9.4 in `vendor/leaflet/`, leaflet-rotate 0.5.3 (GPL-3.0) in `vendor/leaflet-rotate/`. Tutto ciò che dipende dal plugin di rotazione resta in `src/app/map.js`, per poter cambiare libreria. Niente analytics, niente dati inviati a server.
 - Target iOS Safari 16.4+. Test con `node --test` (Node 22). Solo devDependency ammesse: `@xmldom/xmldom`, `playwright`.
 - `src/core/` è puro: niente DOM, niente `window`, niente IndexedDB. Deve restare riusabile da una futura app nativa.
 
 ## Struttura e proprietà dei file
 ```
 index.html  styles.css                       [UI]
-src/app/main.js store.js map.js profile.js ui.js  [UI]
+src/app/main.js store.js map.js profile.js ui.js compass.js  [UI]
 src/app/offline.js  sw.js                     [OFFLINE]
-src/core/gpx.js geo.js route.js edit.js matcher.js tracker.js tiles.js  [CORE]
+src/core/gpx.js geo.js route.js edit.js matcher.js tracker.js tiles.js heading.js  [CORE]
 test/*.test.js  test/fixtures/*.gpx          [CORE]
 manifest.webmanifest icons/ vendor/ README.md package.json .gitignore  [ASSETS]
 ```
@@ -121,6 +121,10 @@ requestPersist()
 - Profilo altimetrico su canvas nel pannello: parte fatta scurita, indicatore posizione, banda stima, tacca ultimo punto sicuro, separatori tra tracce. Etichette `fatti X km · mancano Y km`. Tocco e trascinamento mostrano km, quota, D+ e D− da qui, e un mirino sulla mappa.
 - Banner fuori traccia: `Sei a 120 m dalla traccia` con freccia ruotata verso il punto più vicino.
 - Bottoni grandi (min 48 px): centra su di me/segui, tracce, mappe offline. La mappa smette di seguire al trascinamento.
+- Pulsante posizione a 3 stati: `Centra su di me` (libera) → `Seguo la posizione` (nord in alto) → `Navigazione` (la mappa gira con l'iPhone) → libera. Senza bussola utilizzabile lo stato Navigazione viene saltato. Il permesso iOS per la bussola è chiesto al tocco, in modo sincrono, e non è salvato.
+- Convenzione di rotazione: `setBearing(b)` disegna il nord a `b` gradi in senso orario sullo schermo; una direzione geografica `g` appare a `g + b`. Cono di direzione, frecce sulla traccia e freccia del banner fuori traccia devono sempre tener conto di `b` (variabile CSS `--map-bearing`).
+- Rotazione e zoom con due dita. Un gesto che parte da nord in alto e ruota meno di 5° torna a nord. In Navigazione, una rotazione con le dita oltre 8° passa a `Seguo la posizione` e tiene la rotazione; il trascinamento passa a libera. Bussolina per tornare a nord, visibile solo a mappa ruotata. Bussola inaffidabile per oltre 5 s: nord in alto con avviso, poi riprende.
+- La rotazione è salvata con la vista; lo stato del pulsante no (all'apertura la mappa è libera).
 - Foglio Tracce: importazione multipla (`<input type=file multiple>` SENZA `accept`: iOS disabilita i .gpx altrimenti), lista con colore, visibilità, sposta su/giù, Inverti, Modifica, Esporta GPX, Elimina con conferma. Bottone `Inverti tutto il percorso`. Avviso se c'è un salto > 200 m tra tracce consecutive.
 - Modifica: rinomina, taglia inizio/fine con due cursori e anteprima su mappa e profilo, unisci con la traccia successiva, elimina waypoint, ripristina originale.
 - Foglio Mappe offline: nome del pacchetto, Precisione, Fascia, stima tile e MB aggiornata dal vivo, barra di avanzamento, annulla, lista pacchetti con elimina, spazio usato. `tooMany` blocca il download con una spiegazione. A fine download segnala se ci sono tile fallite e offre di riprovare.
@@ -129,4 +133,4 @@ requestPersist()
 - Persistenza (`store.js`, IndexedDB `sentiero`): tracce, ordine, stato tracker, `Tappa/Totale`, ultima vista mappa. All'apertura ripristina tutto. Tutte le chiamate tollerano errori di storage e li mostrano.
 - Stile: tema chiaro ad alto contrasto, leggibile al sole, testo minimo 16 px, numeri principali almeno 28 px, safe-area iOS, layout solo verticale ma non rotto in orizzontale. Nessun grigio chiaro su bianco.
 - Rendering: l'aggiornamento è guidato da un tick di 1 s su `tracker.snapshot(Date.now())`. Il profilo si ridisegna solo se cambia qualcosa.
-- Per i test E2E, `window.__sentiero` espone `{tracks(), snapshot(), injectFix(fix)}`.
+- Per i test E2E, `window.__sentiero` espone `{tracks(), snapshot(), injectFix(fix), view(), setView(view), viewMode(), bearing()}`.

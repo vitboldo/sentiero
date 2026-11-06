@@ -1,5 +1,5 @@
 // Percorsi relativi allo scope del SW: funziona in una sottocartella (GitHub Pages).
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `sentiero-shell-${CACHE_VERSION}`;
 const TILE_OFFLINE = 'tiles-offline-v1';   // mai toccata qui: appartiene ai pacchetti dell'utente
 const TILE_RUNTIME = 'tiles-runtime-v1';
@@ -12,10 +12,11 @@ const CORE = [
   'index.html',
   'styles.css',
   'src/app/main.js', 'src/app/store.js', 'src/app/map.js', 'src/app/profile.js',
-  'src/app/ui.js', 'src/app/offline.js',
+  'src/app/ui.js', 'src/app/offline.js', 'src/app/compass.js',
   'src/core/gpx.js', 'src/core/geo.js', 'src/core/route.js', 'src/core/edit.js',
-  'src/core/matcher.js', 'src/core/tracker.js', 'src/core/tiles.js',
+  'src/core/matcher.js', 'src/core/tracker.js', 'src/core/tiles.js', 'src/core/heading.js',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css',
+  'vendor/leaflet-rotate/leaflet-rotate.js',
 ];
 // Un file mancante qui non blocca l'installazione.
 const OPTIONAL = [

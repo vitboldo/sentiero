@@ -4,6 +4,8 @@ import { buildRoute, remainingFrom, reverseSession, routeTimeSeconds, statsAt } 
 import { mergeTracks, removeWaypoint, renameTrack, restoreOriginal, toggleReverse, trimTrack } from '../core/edit.js';
 import { createTracker } from '../core/tracker.js';
 import { activateUpdate, registerServiceWorker } from './offline.js';
+import { angleDiffDeg, bearingForHeading, screenBearing } from '../core/heading.js';
+import { createCompass } from './compass.js';
 import { createMap } from './map.js';
 import { createProfile } from './profile.js';
 import { cardinal, createUi, fmtAgo, fmtClock, fmtKm } from './ui.js';
@@ -12,6 +14,9 @@ import * as store from './store.js';
 const COLORS = ['#d62828', '#00838f', '#c2185b', '#6d4c41', '#827717', '#37474f'];
 const FRESH_MS = 15000;
 const PERSIST_EVERY_MS = 10000;
+const COMPASS_STEP_MS = 100;
+const NAV_DEADZONE_DEG = 1.5;
+const COMPASS_LOST_MS = 5000;
 const GEO_OPTIONS = { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 };
 
 const state = {
@@ -23,7 +28,12 @@ const state = {
   lastFix: null,
   gpsError: null,
   watchId: null,
-  follow: false,
+  viewMode: 'free', // 'free' | 'follow' | 'nav'
+  navBearing: 0, // rotazione applicata in nav
+  navFallback: false, // nav con nord in alto per bussola inaffidabile
+  unreliableSince: 0,
+  mapBearing: 0,
+  compassToasted: false,
   wakeLock: null,
   wakeWarned: false,
   lastPersist: 0,
@@ -55,7 +65,10 @@ function refreshViews({ fit = false } = {}) {
   // Prima il pannello (cambia altezza tra "vuoto" e "numeri"), poi l'adattamento della vista: altrimenti
   // la traccia finisce sotto il pannello.
   render();
-  if (fit) map.fitTracks();
+  if (fit) {
+    leaveNav();
+    map.fitTracks();
+  }
 }
 
 /** Applica un nuovo elenco di tracce: ricostruisce, ridisegna e salva. */
@@ -172,7 +185,8 @@ function bannerModel(snap) {
   if (!snap?.offTrack || (snap.source !== 'gps' && snap.source !== 'approssimata')) return null;
   const m = snap.offTrackM;
   const distance = m >= 1000 ? `${fmtKm(m)} km` : `${Math.round(m)} m`;
-  return { text: `Sei a ${distance} dalla traccia, verso ${cardinal(snap.bearingToTrackDeg)}`, bearing: snap.bearingToTrackDeg };
+  // `bearing` è l'angolo sullo schermo (la freccia segue la rotazione); il testo resta geografico.
+  return { text: `Sei a ${distance} dalla traccia, verso ${cardinal(snap.bearingToTrackDeg)}`, bearing: screenBearing(snap.bearingToTrackDeg, state.mapBearing) };
 }
 
 const SOURCE_CAPTION = {
@@ -263,7 +277,8 @@ function render() {
   map.setProgress(progress, estimate && { min: estimate.minDist, max: estimate.maxDist });
   profile.update(profileModel(snap));
   const pos = currentPosition();
-  if (state.follow && pos) map.centerOn(pos.lat, pos.lon);
+  if (state.viewMode === 'follow' && pos) map.centerOn(pos.lat, pos.lon);
+  else if (state.viewMode === 'nav') applyNav(pos);
 }
 
 function persistTracker(force = false) {
@@ -279,9 +294,80 @@ function tick() {
 }
 
 // ---------- Azioni dell'interfaccia ----------
-function setFollow(on) {
-  state.follow = on;
-  ui.setFollow(on);
+function setViewMode(mode) {
+  if (state.viewMode === mode) return;
+  state.viewMode = mode;
+  state.unreliableSince = 0;
+  state.navFallback = false;
+  ui.setViewMode(mode);
+}
+
+/** Prima di map.fitTracks: la navigazione ruota la mappa, l'adattamento ai bordi presuppone il nord in alto. */
+function leaveNav(to = 'follow') {
+  if (state.viewMode === 'nav') setViewMode(to);
+}
+
+/** Navigazione: rotazione dell'ultima lettura, utente in basso nell'area visibile. Senza posizione ruota soltanto. */
+function applyNav(pos = currentPosition()) {
+  if (pos) map.navigate(pos.lat, pos.lon, state.navBearing);
+  else map.setBearing(state.navBearing);
+}
+
+function notifyCompassOnce(message) {
+  if (state.compassToasted) return;
+  state.compassToasted = true;
+  ui.toast(message);
+}
+
+// ---------- Bussola ----------
+let rafId = 0;
+let lastStepAt = 0;
+const compassLive = () => compass.isActive() && document.visibilityState === 'visible';
+
+/** Un passo del ciclo: cono di direzione e, in nav, rotazione (con zona morta). */
+function compassStep() {
+  const now = Date.now();
+  const { deg, reliable } = compass.read(now);
+  map.setHeading(reliable && deg !== null ? deg : null);
+  if (state.viewMode !== 'nav') return;
+  if (reliable && deg !== null) {
+    const target = bearingForHeading(deg);
+    const recovered = state.navFallback;
+    state.unreliableSince = 0;
+    state.navFallback = false;
+    if (recovered || Math.abs(angleDiffDeg(state.navBearing, target)) > NAV_DEADZONE_DEG) {
+      state.navBearing = target;
+      applyNav();
+    }
+  } else if (!state.unreliableSince) {
+    state.unreliableSince = now;
+  } else if (!state.navFallback && now - state.unreliableSince >= COMPASS_LOST_MS) {
+    state.navFallback = true;
+    state.navBearing = 0;
+    ui.toast('Bussola non affidabile: mappa con il nord in alto');
+    applyNav();
+  }
+}
+
+function compassLoop(ts) {
+  rafId = 0;
+  if (!compassLive()) return;
+  if (ts - lastStepAt >= COMPASS_STEP_MS) {
+    lastStepAt = ts;
+    compassStep();
+  }
+  rafId = requestAnimationFrame(compassLoop);
+}
+
+/** Il ciclo gira solo con bussola attiva e pagina visibile. */
+function syncCompassLoop() {
+  if (compassLive()) {
+    if (!rafId) rafId = requestAnimationFrame(compassLoop);
+  } else if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+  if (!compass.isActive()) map.setHeading(null);
 }
 
 async function readTrackFile(file, colorIndex) {
@@ -307,9 +393,27 @@ const actions = {
     render();
   },
 
+  /** Pulsante a 3 stati: free -> follow -> nav -> free (nav solo con bussola utilizzabile). */
   locate() {
-    if (state.follow) {
-      setFollow(false);
+    // Sincrono dentro il click, prima di qualsiasi await: iOS altrimenti rifiuta il permesso.
+    compass.request();
+    const mode = state.viewMode;
+    if (mode === 'nav') {
+      setViewMode('free');
+      return;
+    }
+    if (mode === 'follow') {
+      if (compass.canNavigate()) {
+        const { deg } = compass.read();
+        state.navBearing = deg === null ? 0 : bearingForHeading(deg);
+        setViewMode('nav');
+        applyNav();
+      } else {
+        setViewMode('free');
+        notifyCompassOnce(compass.status() === 'denied'
+          ? 'Bussola non autorizzata: abilitala in Impostazioni > Safari > Movimento e orientamento. Navigazione non disponibile.'
+          : 'Bussola non disponibile: modalità Navigazione non attiva.');
+      }
       return;
     }
     const pos = currentPosition();
@@ -319,8 +423,15 @@ const actions = {
       map.fitTracks();
       return;
     }
-    setFollow(true);
+    setViewMode('follow');
+    map.setBearing(0);
     map.centerOn(pos.lat, pos.lon, Math.max(map.getView().zoom, 15));
+  },
+
+  /** Bussolina: nord in alto; da nav si passa a follow. */
+  northUp() {
+    map.setBearing(0);
+    leaveNav('follow');
   },
 
   statusTap() {
@@ -430,15 +541,24 @@ const actions = {
 
   /** Porta la traccia nella parte di mappa non coperta da un foglio alto `height` px. */
   fitAboveSheet(height) {
+    leaveNav('free');
     map.fitTracks(height);
   },
 };
 
 // ---------- Avvio ----------
 const ui = createUi(actions);
+const compass = createCompass({ onStatus: () => syncCompassLoop() });
 const map = createMap(document.getElementById('map'), {
   getBottomInset: ui.getBottomInset,
-  onUserMove: () => setFollow(false),
+  onUserMove: () => setViewMode('free'),
+  onUserRotate: () => leaveNav('follow'),
+  onBearingChange(deg) {
+    state.mapBearing = deg;
+    ui.setNorth(deg);
+    // La freccia del banner segue subito la rotazione, senza aspettare il tick da 1 s.
+    if (state.snap) ui.renderBanner(bannerModel(state.snap));
+  },
   onViewChange: (() => {
     let timer = 0;
     return (view) => {
@@ -497,8 +617,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     acquireWakeLock();
     startWatch();
+    state.unreliableSince = 0;
+    syncCompassLoop();
     render();
   } else {
+    syncCompassLoop();
     persistTracker(true);
   }
 });
@@ -514,6 +637,8 @@ window.__sentiero = {
   injectFix: (fix) => ingestFix({ accuracy: 10, timestamp: Date.now(), ...fix }),
   view: () => map.getView(),
   setView: (view) => map.setView(view),
+  viewMode: () => state.viewMode,
+  bearing: () => map.getBearing(),
 };
 
 start();

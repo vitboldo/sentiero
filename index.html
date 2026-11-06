@@ -28,6 +28,12 @@
     </div>
   </div>
 
+  <button id="btn-north" type="button" hidden aria-label="Riporta il nord in alto">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <g id="north-needle"><path d="M24 6 31 24H17z" fill="#d62828"/><path d="M24 42 17 24h14z" fill="#59616e"/></g>
+    </svg>
+  </button>
+
   <section id="panel" aria-label="Avanzamento">
     <div id="empty" hidden><p id="empty-text"></p></div>
     <div id="live">
@@ -52,7 +58,7 @@
       <p id="profile-label"></p>
     </div>
     <nav id="actions">
-      <button id="btn-locate" class="btn" type="button" aria-pressed="false">Centra su di me</button>
+      <button id="btn-locate" class="btn" type="button" aria-pressed="false" data-view-mode="free">Centra su di me</button>
       <button id="btn-tracks" class="btn primary" type="button">Tracce</button>
       <button id="btn-offline" class="btn" type="button">Mappe offline</button>
     </nav>
@@ -62,6 +68,7 @@
   <div id="toast" role="status" aria-live="polite"></div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/leaflet-rotate/leaflet-rotate.js"></script>
   <script type="module" src="src/app/main.js"></script>
 </body>
 </html>

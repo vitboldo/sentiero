@@ -2,6 +2,7 @@
 import { TILE_URL } from '../core/tiles.js';
 import { effectivePoints, statsAt } from '../core/route.js';
 import { bearingDeg } from '../core/geo.js';
+import { normalizeDeg, angleDiffDeg, rotateOffset } from '../core/heading.js';
 
 const L = window.L;
 
@@ -11,6 +12,12 @@ const MAX_ANCESTOR_STEPS = 5;
 const ARROW_SPACING_M = 500;
 const MAX_ARROWS_IN_VIEW = 120;
 const PREVIEW_MAX_POINTS = 1500;
+const NAV_USER_FRACTION = 0.7; // in navigazione l'utente sta al 70% dell'altezza visibile
+const MOVEEND_DEBOUNCE_MS = 200;
+const MOVEEND_MAX_WAIT_MS = 1000;
+const ROTATE_REFRESH_MS = 150;
+const SNAP_NORTH_DEG = 5;
+const USER_ROTATE_DEG = 8;
 const LINE = { interactive: false, smoothFactor: 1.5 };
 
 const loadImage = (url) => new Promise((resolve, reject) => {
@@ -117,7 +124,7 @@ function arrowIcon(bearing) {
   if (!arrowIcons.has(key)) {
     arrowIcons.set(key, L.divIcon({
       className: 'mk-arrow',
-      html: `<svg viewBox="0 0 24 24" style="transform:rotate(${key}deg)"><path d="M12 2 20 21l-8-5-8 5z"/></svg>`,
+      html: `<svg viewBox="0 0 24 24" style="transform:rotate(calc(${key}deg + var(--map-bearing, 0deg)))"><path d="M12 2 20 21l-8-5-8 5z"/></svg>`,
       iconSize: [22, 22],
       iconAnchor: [11, 11],
     }));
@@ -135,11 +142,12 @@ const dotIcon = (className, size, text) => {
 
 /**
  * @param {HTMLElement} el
- * @param {{getBottomInset: () => number, onUserMove: () => void, onViewChange: (v:{lat:number,lon:number,zoom:number}) => void}} hooks
+ * @param {{getBottomInset: () => number, onUserMove: () => void, onViewChange: (v:{lat:number,lon:number,zoom:number,bearing:number}) => void,
+ *   onUserRotate?: () => void, onBearingChange?: (deg:number) => void}} hooks
  */
-export function createMap(el, { getBottomInset, onUserMove, onViewChange }) {
+export function createMap(el, { getBottomInset, onUserMove, onViewChange, onUserRotate, onBearingChange }) {
   const renderer = L.canvas({ padding: 0.3 });
-  const map = L.map(el, { maxZoom: MAX_ZOOM, minZoom: 4, renderer, zoomControl: false, attributionControl: true });
+  const map = L.map(el, { maxZoom: MAX_ZOOM, minZoom: 4, renderer, zoomControl: false, attributionControl: true, rotate: true, touchRotate: true, rotateControl: false, bearing: 0 });
   map.attributionControl.setPrefix(false);
   L.control.zoom({ position: 'topright', zoomInText: '+', zoomOutText: '−' }).addTo(map);
   new FallbackTileLayer(TILE_URL, {
@@ -160,7 +168,28 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange }) {
 
   const markerOpts = { interactive: false, keyboard: false };
   const accuracyCircle = L.circle([0, 0], { renderer, interactive: false, radius: 1, color: '#0057d9', weight: 1, fillColor: '#0057d9', fillOpacity: 0.12 });
-  const gpsMarker = L.marker([0, 0], { ...markerOpts, icon: dotIcon('mk-gps', 24), zIndexOffset: 1000 });
+  // Cono di direzione: SECONDO figlio dell'icona (il primo resta il pallino). Ricreato a ogni aggiunta del marcatore.
+  let heading = null;
+  const applyHeading = (node) => {
+    if (!node) return;
+    node.classList.toggle('has-heading', heading !== null);
+    if (heading !== null) node.style.setProperty('--heading', `${heading}deg`);
+  };
+  const GpsIcon = L.DivIcon.extend({
+    createIcon(old) {
+      const div = L.DivIcon.prototype.createIcon.call(this, old);
+      if (div.children.length < 2) {
+        const cone = document.createElement('div');
+        cone.className = 'mk-cone';
+        div.append(cone);
+      }
+      applyHeading(div);
+      return div;
+    },
+  });
+  const gpsDot = Object.assign(document.createElement('div'), { className: 'mk-gps' });
+  const gpsIcon = new GpsIcon({ className: '', html: gpsDot, iconSize: [24, 24], iconAnchor: [12, 12] });
+  const gpsMarker = L.marker([0, 0], { ...markerOpts, icon: gpsIcon, zIndexOffset: 1000 });
   const sureMarker = L.marker([0, 0], { ...markerOpts, zIndexOffset: 500 });
   const estimateMarker = L.marker([0, 0], { ...markerOpts, icon: dotIcon('mk-est', 38, '~'), zIndexOffset: 600 });
   const crossMarker = L.marker([0, 0], { ...markerOpts, icon: dotIcon('mk-cross', 48), zIndexOffset: 2000 });
@@ -226,14 +255,107 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange }) {
     }
   }
 
-  map.on('dragstart', onUserMove);
-  map.on('moveend', () => {
+  // ---- Rotazione: stato, gesti, lavoro rimandato ----
+  let gesturing = false;
+  let gestureStartBearing = 0;
+  let programmatic = 0; // >0 mentre l'app stessa muove la mappa
+  let moveTimer = 0;
+  let moveFirstAt = 0;
+  let rotateTimer = 0;
+  let lastBearing = 0;
+
+  const currentBearing = () => normalizeDeg(map.getBearing());
+  const blocked = () => gesturing || map._animatingZoom;
+  const programmaticly = (fn) => {
+    programmatic++;
+    try {
+      return fn();
+    } finally {
+      programmatic--;
+    }
+  };
+
+  const onMoveEnd = () => {
     drawArrows();
     const c = map.getCenter();
-    onViewChange({ lat: c.lat, lon: c.lng, zoom: map.getZoom() });
+    onViewChange({ lat: c.lat, lon: c.lng, zoom: map.getZoom(), bearing: currentBearing() });
+  };
+  // Cambi programmatici: lavoro accorpato (debounce con attesa massima), niente ricalcoli a ogni chiamata.
+  const scheduleMoveEnd = () => {
+    const now = performance.now();
+    if (!moveTimer) moveFirstAt = now;
+    clearTimeout(moveTimer);
+    const wait = Math.max(0, Math.min(MOVEEND_DEBOUNCE_MS, moveFirstAt + MOVEEND_MAX_WAIT_MS - now));
+    moveTimer = setTimeout(() => {
+      moveTimer = 0;
+      onMoveEnd();
+    }, wait);
+  };
+  map.on('dragstart', () => onUserMove());
+  map.on('moveend', () => {
+    if (programmatic) {
+      scheduleMoveEnd();
+      return;
+    }
+    clearTimeout(moveTimer);
+    moveTimer = 0;
+    onMoveEnd();
   });
   map.on('zoomend', () => el.classList.toggle('zoom-low', map.getZoom() < 13));
+
+  // Dopo una rotazione restano angoli senza tile: un moveend (rimandato) li fa caricare.
+  const refreshAfterRotate = () => {
+    clearTimeout(rotateTimer);
+    rotateTimer = setTimeout(() => {
+      if (!gesturing) programmaticly(() => map.fire('moveend'));
+    }, ROTATE_REFRESH_MS);
+  };
+  map.on('rotate', () => {
+    const b = currentBearing();
+    el.style.setProperty('--map-bearing', `${b}deg`);
+    refreshAfterRotate();
+    if (b !== lastBearing) {
+      lastBearing = b;
+      onBearingChange?.(b);
+    }
+  });
+
+  // Gesto a due dita: il plugin non emette eventi di inizio/fine, li ricavo dai touch.
+  const finishGesture = () => {
+    gesturing = false;
+    const now = currentBearing();
+    if (gestureStartBearing === 0 && Math.abs(angleDiffDeg(0, now)) < SNAP_NORTH_DEG) {
+      if (now !== 0) programmaticly(() => map.setBearing(0));
+    } else if (Math.abs(angleDiffDeg(gestureStartBearing, now)) > USER_ROTATE_DEG) {
+      onUserRotate?.();
+    }
+    refreshAfterRotate();
+  };
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2 || gesturing) return;
+    gesturing = true;
+    gestureStartBearing = currentBearing();
+  }, { passive: true });
+  const onTouchEnd = (e) => {
+    if (!gesturing || e.touches.length >= 2) return;
+    // Il plugin chiude il suo gesto (e avvia l'animazione di zoom) sullo stesso evento: aspetto che finisca.
+    setTimeout(() => {
+      if (map._animatingZoom) map.once('zoomend', finishGesture);
+      else finishGesture();
+    }, 0);
+  };
+  document.addEventListener('touchend', onTouchEnd, { passive: true });
+  document.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
   new ResizeObserver(() => map.invalidateSize()).observe(el);
+
+  /** Centro della mappa che porta il punto sulla posizione schermo (px da el) indicata. */
+  const centerFor = (lat, lon, zoom, screenX, screenY) => {
+    const size = map.getSize();
+    const d = rotateOffset(size.x / 2 - screenX, size.y / 2 - screenY, -currentBearing());
+    return map.unproject(map.project([lat, lon], zoom).add([d.x, d.y]), zoom);
+  };
+  const visibleHeight = () => Math.max(1, map.getSize().y - getBottomInset());
 
   return {
     /** Ricostruisce tracce, marcatori e frecce. */
@@ -320,25 +442,57 @@ export function createMap(el, { getBottomInset, onUserMove, onViewChange }) {
     /** @param {number} [bottomInset] altezza coperta in basso (default: il pannello) */
     fitTracks(bottomInset = getBottomInset()) {
       if (!bounds) return;
+      if (currentBearing() !== 0) map.setBearing(0);
       map.fitBounds(bounds, { paddingTopLeft: [16, 80], paddingBottomRight: [16, bottomInset + 16], maxZoom: 16, animate: false });
     },
 
-    /** Centra il punto nella parte di mappa non coperta dal pannello. */
+    /** Centra il punto nella parte di mappa non coperta dal pannello (a qualsiasi rotazione). */
     centerOn(lat, lon, zoom) {
-      const moved = !lastCenter || Math.abs(lastCenter[0] - lat) > 2e-5 || Math.abs(lastCenter[1] - lon) > 2e-5;
+      if (blocked()) return;
+      const bearing = currentBearing();
+      const moved = !lastCenter || Math.abs(lastCenter[0] - lat) > 2e-5 || Math.abs(lastCenter[1] - lon) > 2e-5 || lastCenter[2] !== bearing;
       if (!moved && zoom === undefined) return;
-      lastCenter = [lat, lon];
+      lastCenter = [lat, lon, bearing];
       const z = zoom ?? map.getZoom();
-      const shifted = map.project([lat, lon], z).add([0, getBottomInset() / 2]);
-      map.setView(map.unproject(shifted, z), z, { animate: false });
+      const center = centerFor(lat, lon, z, map.getSize().x / 2, visibleHeight() / 2);
+      programmaticly(() => map.setView(center, z, { animate: false }));
+    },
+
+    /** Navigazione: rotazione e posizione insieme; l'utente sta al centro in orizzontale e al 70% dell'altezza visibile. */
+    navigate(lat, lon, bearing) {
+      if (blocked()) return;
+      const b = normalizeDeg(bearing);
+      const z = map.getZoom();
+      programmaticly(() => {
+        map.setBearing(b);
+        map.setView(centerFor(lat, lon, z, map.getSize().x / 2, visibleHeight() * NAV_USER_FRACTION), z, { animate: false });
+      });
+      lastCenter = [lat, lon, currentBearing()];
+    },
+
+    /** Rotazione immediata, senza animazione (il nord appare a `deg` gradi in senso orario). */
+    setBearing(deg) {
+      if (blocked()) return;
+      programmaticly(() => map.setBearing(normalizeDeg(deg)));
+    },
+
+    getBearing() {
+      return currentBearing();
+    },
+
+    /** Direzione dell'iPhone per il cono (gradi sullo schermo, nord in alto); null = cono nascosto. */
+    setHeading(deg) {
+      heading = Number.isFinite(deg) ? normalizeDeg(deg) : null;
+      applyHeading(gpsMarker.getElement());
     },
 
     getView() {
       const c = map.getCenter();
-      return { lat: c.lat, lon: c.lng, zoom: map.getZoom() };
+      return { lat: c.lat, lon: c.lng, zoom: map.getZoom(), bearing: currentBearing() };
     },
 
-    setView({ lat, lon, zoom }) {
+    setView({ lat, lon, zoom, bearing }) {
+      map.setBearing(normalizeDeg(bearing ?? 0));
       map.setView([lat, lon], zoom, { animate: false });
     },
   };
